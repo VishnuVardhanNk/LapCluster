@@ -320,6 +320,15 @@ function buildConnect() {
   );
 }
 
+async function setVisionOverride(value) {
+  try {
+    await api("/api/vision", { vision: value });
+    await refresh();
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
 function drawConnect() {
   const d = ui.data;
   region(connectEls.problem, [ui.connectProblem, ui.serverDown, d.restore_problem], () => [
@@ -327,12 +336,28 @@ function drawConnect() {
     !ui.connectProblem && d.restore_problem && h("div", { class: "problem" }, h("strong", { text: "Not reconnected. " }), d.restore_problem),
     ui.connectProblem && h("div", { class: "problem", role: "alert" }, h("strong", { text: "Could not connect. " }), ui.connectProblem),
   ]);
-  region(connectEls.laptop, [d.me, d.ollama, d.models, d.model], () => h("dl", { class: "facts" },
+  region(connectEls.laptop, [d.me, d.ollama, d.models, d.model, d.provider, d.vision_override], () => h("dl", { class: "facts" },
     h("dt", { text: "Name" }), h("dd", { text: d.me }),
-    h("dt", { text: "Ollama" }), h("dd", null, d.ollama
+    h("dt", { text: d.provider === "llama_cpp" ? "llama.cpp" : "Ollama" }),
+    h("dd", null, d.ollama
       ? status("done", `Running, ${plural(d.models.length, "model")} installed`)
-      : status("failed", "Not running. Start Ollama, then this updates by itself.")),
+      : status("failed", d.provider === "llama_cpp" ? "Not running. Start llama-server, then this updates by itself." : "Not running. Start Ollama, then this updates by itself.")),
     h("dt", { text: "Model" }), h("dd", null, modelPicker(d.me, d.model, d.models, d.ollama)),
+    d.provider === "llama_cpp" && h("dt", { text: "Vision model?" }),
+    d.provider === "llama_cpp" && h("dd", null,
+      h("select", {
+        class: "field", "aria-label": "Does this llama.cpp model support vision (images)?",
+        onchange: (e) => setVisionOverride(e.target.value),
+      },
+        h("option", { value: "",     selected: !d.vision_override,              text: "Auto-detect" }),
+        h("option", { value: "true",  selected: d.vision_override === "true",   text: "Yes — this model accepts images" }),
+        h("option", { value: "false", selected: d.vision_override === "false",  text: "No — text only" }),
+      ),
+      d.provider === "llama_cpp" && !d.vision_override && h("span", {
+        class: "hint",
+        text: "llama.cpp didn't report vision capability. Choose manually if auto-detect is wrong.",
+      }),
+    ),
   ));
   // Show a remembered password that arrived after the box was built, but only
   // into an empty box: whatever is already in it, typed or filled in by a

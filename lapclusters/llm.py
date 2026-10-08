@@ -50,7 +50,8 @@ def _explain(exc: Exception, timeout: float) -> str:
         return f"{config.MODEL} did not answer within {timeout:g} seconds"
     if isinstance(exc, ModelError):
         return f"Ollama could not run {config.MODEL} ({exc})"
-    return "Ollama is not running"
+    provider = "llama.cpp" if _model_provider() == "llama_cpp" else "Ollama"
+    return f"{provider} is not running"
 
 
 def _model_provider() -> str:
@@ -184,9 +185,44 @@ def list_models(timeout: float = 5.0) -> list[str]:
     return sorted(model["name"] for model in response.json().get("models", []))
 
 
+def _llama_cpp_can_see(model: str, timeout: float) -> bool:
+    """Ask llama.cpp whether the loaded model has vision capability.
+
+    Priority:
+    1. ``config.LLAMA_CPP_VISION`` — user override set via the dashboard or
+       ``LLAMA_CPP_VISION=true/false`` in .env.
+    2. ``GET /props`` → ``modalities.vision`` (available on recent builds).
+    3. ``False`` — conservative default; user is prompted to set the override.
+    """
+    override = config.LLAMA_CPP_VISION.strip().lower()
+    if override == "true":
+        return True
+    if override == "false":
+        return False
+    # No override — ask the server.
+    try:
+        response = httpx.get(f"{config.LLAMA_CPP_URL}/props", timeout=timeout)
+        response.raise_for_status()
+        payload = response.json()
+        modalities = payload.get("modalities")
+        if isinstance(modalities, dict) and "vision" in modalities:
+            return bool(modalities["vision"])
+    except (httpx.HTTPError, ValueError, KeyError, TypeError):
+        pass
+    # /props gave no definitive answer — fall back to False and let the user
+    # set the override in the dashboard.
+    return False
+
+
 def can_see(model: str, timeout: float = 5.0) -> bool:
-    """Whether a model accepts images. A model imported without its image
-    projector, or one that is text-only, does not."""
+    """Whether a model accepts images.
+
+    For Ollama, asks the server directly via /api/show.
+    For llama.cpp, checks GET /props (``modalities.vision``), falling back to
+    a name-based heuristic for older server builds.
+    """
+    if _model_provider() == "llama_cpp":
+        return _llama_cpp_can_see(model, timeout)
     response = httpx.post(f"{config.OLLAMA_URL}/api/show", json={"model": model}, timeout=timeout)
     response.raise_for_status()
     return "vision" in response.json().get("capabilities", [])

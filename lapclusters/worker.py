@@ -55,7 +55,19 @@ class Runtime:
         except (httpx.HTTPError, ValueError, KeyError):
             self.ollama_ok = False
         self.checked = True
-        self._check_sight(config.MODEL)
+        if self.ollama_ok:
+            self._auto_select_model()
+            self._check_sight(config.MODEL)
+
+    def _auto_select_model(self) -> None:
+        """If the configured model is not available, switch to the first model
+        that is actually running on this server. This means workers adapt
+        automatically to what llama.cpp or Ollama is serving without requiring
+        `MODEL=` in .env to be kept in sync."""
+        if not self.models:
+            return
+        if config.MODEL not in self.models:
+            config.MODEL = self.models[0]
 
     def _check_sight(self, model: str) -> None:
         if not self.ollama_ok or model not in self.models or model in self._sight:
@@ -71,21 +83,16 @@ class Runtime:
 
     def ready(self) -> bool:
         """Can this laptop run a task right now?"""
-        return self.ollama_ok and config.MODEL in self.models
+        return self.ollama_ok and bool(self.models)
 
     def problem(self) -> str:
         """Why this laptop is not taking work, in words its owner can act on."""
         if not self.checked:
             return ""
         if not self.ollama_ok:
-            return "Ollama is not running on this laptop. Start it and reviewing resumes by itself."
-        if config.MODEL not in self.models:
-            installed = ", ".join(self.models) or "none"
-            return (
-                f"The model {config.MODEL} is not installed on this laptop, so it is not "
-                f"taking work. Choose one that is installed ({installed}), or run "
-                f"'ollama pull {config.MODEL}'."
-            )
+            return "The model server (Ollama or llama.cpp) is not running on this laptop. Start it and reviewing resumes by itself."
+        if not self.models:
+            return "No models are installed on the model server. Install at least one model to start taking work."
         return self.trouble
 
     def lanes(self) -> tuple[str, ...]:
@@ -113,7 +120,7 @@ class Runtime:
         """
         self.refresh_models()
         if not self.ollama_ok:
-            return "Ollama is not running on this laptop"
+            return "The model server is not running on this laptop"
         if model not in self.models:
             return f"{model} is not installed on {self.name}"
         config.MODEL = model

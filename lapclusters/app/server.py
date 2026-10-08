@@ -192,6 +192,8 @@ def create_app(node: Node | None = None) -> FastAPI:
             "models": node.runtime.models,
             "ollama": node.runtime.ollama_ok,
             "vision": node.runtime.vision,
+            "provider": config.MODEL_PROVIDER,
+            "vision_override": config.LLAMA_CPP_VISION,
             "restore_problem": node.restore_problem,
             "saved_password": unquote(saved.password or "") if node.role is None else "",
             "saved_port": saved.port or 6379,
@@ -231,6 +233,19 @@ def create_app(node: Node | None = None) -> FastAPI:
         else:
             return _problem("Unknown action.")
         return {"ok": True, "state": node.worker_state}
+
+    class VisionBody(BaseModel):
+        vision: str  # "true", "false", or "" (reset to auto-detect)
+
+    @app.post("/api/vision")
+    def set_vision(body: VisionBody):
+        value = body.vision.strip().lower()
+        if value not in ("true", "false", ""):
+            return _problem('vision must be "true", "false", or "" to reset.')
+        config.LLAMA_CPP_VISION = value
+        # Re-check whether the current model can see, now that the override changed.
+        node.runtime.refresh_models()
+        return {"ok": True, "vision": config.LLAMA_CPP_VISION}
 
     @app.post("/api/model")
     def model(body: ModelBody):

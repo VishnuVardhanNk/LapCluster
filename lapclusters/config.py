@@ -19,6 +19,8 @@ if MODEL_PROVIDER not in {"ollama", "llama_cpp"}:
     raise SystemExit("MODEL_PROVIDER in .env must be 'ollama' or 'llama_cpp'.")
 OLLAMA_URL = _setting("OLLAMA_URL", "http://localhost:11434")
 LLAMA_CPP_URL = _setting("LLAMA_CPP_URL", "http://localhost:9931")
+# Manual override for llama.cpp vision capability: "true", "false", or "" (ask the server).
+LLAMA_CPP_VISION = _setting("LLAMA_CPP_VISION", "")
 MODEL = _setting("MODEL", "gemma4:e4b")
 WORKER_NAME = _setting("WORKER_NAME", socket.gethostname())
 # Only needed when REDIS_URL uses the host name "auto" and several hosts answer.
