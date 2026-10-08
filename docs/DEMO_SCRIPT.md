@@ -86,10 +86,44 @@ a task, another laptop takes over its work. If a laptop cannot run its model, it
 gives the task back instead of failing it, and its card tells you exactly what
 is wrong. And every job is saved here in History.
 
-**[Go back to the Work tab.]**
+**[Open the project's GitHub page and scroll to the architecture diagram in the
+README. Keep it on screen for this whole part.]**
 
-LapClusters is open source. It is built with Gemma 4, Ollama, Redis and Python.
-It turns the laptops you already own into a private AI cluster.
+Now a little about how it is built.
+
+The whole project is written in Python. The AI model is Gemma 4, an open model
+from Google. Each laptop runs it locally with Ollama, so the model never talks
+to the internet.
+
+The heart of the system is Redis, which runs in Docker on the host laptop. We
+use a feature called Redis Streams as our task queue. When I start a job, the
+host splits it into tasks and adds them to the stream. Every laptop reads from
+that same stream, and Redis makes sure each task goes to exactly one laptop, so
+no work is done twice.
+
+A laptop only asks for a new task when it is free. That means a faster laptop
+simply takes more tasks. We did not have to write any scheduling logic.
+
+The file itself travels inside the task, through Redis. So the other laptops do
+not need a copy of the project, and they do not need internet. They only need to
+reach the host.
+
+Each laptop also sends a small heartbeat to Redis every few seconds. If the
+heartbeats stop, the cluster knows that laptop is gone and gives its task to
+someone else.
+
+To find each other, the laptops use a small broadcast message on the local
+network. That is why nobody types an IP address.
+
+The dashboard is a small web server written with FastAPI, with a page made in
+plain HTML, CSS and JavaScript. Every laptop runs its own copy, and they all
+read the same state from Redis. For PDFs we use a library called pypdf, and for
+pictures we use Pillow.
+
+**[Go back to the app, on the Work tab.]**
+
+LapClusters is open source. It turns the laptops you already own into a private
+AI cluster.
 
 Thank you.
 
