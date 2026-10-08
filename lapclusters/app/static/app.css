@@ -167,6 +167,11 @@ label.stack > span { font-weight: 600; color: var(--text); font-size: 14px; }
 
 .brand { display: inline-flex; align-items: center; gap: 9px; font-weight: 700; font-size: 16px; letter-spacing: -.01em; }
 .brand svg { width: 26px; height: 26px; color: var(--accent); }
+.brand.busy svg circle { transform-box: fill-box; transform-origin: center; animation: hop 1.5s ease-in-out infinite; }
+.brand.busy svg circle:nth-of-type(2) { animation-delay: .25s; }
+.brand.busy svg circle:nth-of-type(3) { animation-delay: .5s; }
+.brand.busy svg circle:nth-of-type(4) { animation-delay: .75s; }
+@keyframes hop { 0%, 60%, 100% { transform: scale(1); } 30% { transform: scale(1.45); } }
 
 /* --- landing (connect) screen ------------------------------------------ */
 
@@ -204,10 +209,16 @@ label.stack > span { font-weight: 600; color: var(--text); font-size: 14px; }
 .diagram .wire { stroke: var(--accent); stroke-width: 1.6; stroke-dasharray: 5 7; fill: none; opacity: .75; animation: flow 1.4s linear infinite; }
 .diagram .screen { fill: var(--surface); stroke: var(--line-strong); stroke-width: 1.5; }
 .diagram .base { fill: var(--line-strong); }
-.diagram .l1 { fill: var(--accent); opacity: .85; }
-.diagram .l2 { fill: var(--line-strong); }
+.diagram .lap { animation: bob 3.2s ease-in-out infinite; }
+.diagram .eye { fill: var(--accent); transform-box: fill-box; transform-origin: center; animation: blink 4.4s infinite; }
+.diagram .smile { stroke: var(--accent); stroke-width: 2.2; fill: none; stroke-linecap: round; }
+.diagram .parcel { fill: var(--accent); }
+.diagram .parcel.back { fill: var(--surface); stroke: var(--accent); stroke-width: 1.8; }
 .diagram .hub { fill: var(--accent); }
-.diagram .halo { fill: var(--accent); opacity: .14; }
+.diagram .halo { fill: var(--accent); opacity: .14; transform-box: fill-box; transform-origin: center; animation: breathe 2.6s ease-in-out infinite; }
+@keyframes bob { 50% { transform: translateY(-3.5px); } }
+@keyframes blink { 0%, 91%, 100% { transform: scaleY(1); } 95% { transform: scaleY(.12); } }
+@keyframes breathe { 50% { transform: scale(1.14); opacity: .07; } }
 .diagram text { font: 600 11px var(--sans); fill: var(--accent-ink); letter-spacing: .04em; }
 .diagram .cap { fill: var(--muted); font-weight: 500; }
 @keyframes flow { to { stroke-dashoffset: -24; } }

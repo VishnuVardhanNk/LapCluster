@@ -144,7 +144,11 @@ async function refresh() {
     const data = await api(`/api/state${ui.job ? `?job=${encodeURIComponent(ui.job)}` : ""}`);
     ui.serverDown = false;
     if (data.now) ui.skew = data.now - Date.now() / 1000;
-    if (ui.password === null) ui.password = data.saved_password || "";
+    // Offer the password this laptop already knows, until the user types one.
+    // It is only sent while disconnected, so it has to be picked up whenever
+    // it appears, not just on the first refresh.
+    if (!ui.passwordTouched && data.saved_password) ui.password = data.saved_password;
+    if (ui.password === null) ui.password = "";
     noticeEvents(data);
     ui.data = data;
   } catch {
@@ -205,10 +209,22 @@ const ICONS = {
 
 // One laptop drawing, placed four times. Written out in full for each place,
 // because styles do not reach inside an SVG <use> copy.
-const LAPTOP = '<rect class="screen" x="-36" y="-26" width="72" height="44" rx="6"/><rect class="base" x="-46" y="21" width="92" height="6" rx="3"/><rect class="l1" x="-24" y="-14" width="30" height="4" rx="2"/><rect class="l2" x="-24" y="-5" width="46" height="4" rx="2"/><rect class="l2" x="-24" y="4" width="22" height="4" rx="2"/>';
+// Each laptop has a small face that blinks, and bobs a little out of step with
+// the others.
+const LAPTOP = '<rect class="screen" x="-36" y="-26" width="72" height="44" rx="6"/><rect class="base" x="-46" y="21" width="92" height="6" rx="3"/><circle class="eye" cx="-10" cy="-9" r="2.8"/><circle class="eye" cx="10" cy="-9" r="2.8"/><path class="smile" d="M-8 2Q0 9 8 2"/>';
+const SPOTS = [[84, 62], [356, 62], [84, 190], [356, 190]];
+// Little parcels of work: one travels from the queue to each laptop, and an
+// answer travels back, at staggered times so the picture is never still.
+const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const parcels = still ? "" : SPOTS.map(([x, y], i) => (
+  `<circle class="parcel out" r="4.2"><animateMotion dur="2.6s" begin="${i * 0.65}s" repeatCount="indefinite" path="M220 125L${x} ${y}" keyPoints="0.18;0.8" keyTimes="0;1" calcMode="linear"/></circle>`
+  + `<circle class="parcel back" r="3.4"><animateMotion dur="2.6s" begin="${i * 0.65 + 1.3}s" repeatCount="indefinite" path="M${x} ${y}L220 125" keyPoints="0.2;0.82" keyTimes="0;1" calcMode="linear"/></circle>`
+)).join("");
 ICONS.diagram = ICONS.diagram.replace(
   "LAPTOPS",
-  [[84, 62], [356, 62], [84, 190], [356, 190]].map(([x, y]) => `<g transform="translate(${x} ${y})">${LAPTOP}</g>`).join(""),
+  parcels + SPOTS.map(([x, y], i) => (
+    `<g transform="translate(${x} ${y})"><g class="lap" style="animation-delay:${-i * 0.7}s">${LAPTOP.replaceAll('class="eye"', `class="eye" style="animation-delay:${-i * 1.1}s"`)}</g></g>`
+  )).join(""),
 );
 
 function icon(name) {
@@ -231,7 +247,7 @@ function buildConnect() {
     // other site, which then fails here with no visible reason.
     class: "field", type: "password", autocomplete: "new-password", placeholder: "Leave empty if Redis has none",
     "aria-label": "Cluster password",
-    value: ui.password || "", oninput: (e) => { ui.password = e.target.value; },
+    value: ui.password || "", oninput: (e) => { ui.password = e.target.value; ui.passwordTouched = true; },
   });
   const reveal = h("label", { class: "row small muted" },
     h("input", { type: "checkbox", onchange: (e) => { password.type = e.target.checked ? "text" : "password"; } }),
@@ -240,6 +256,7 @@ function buildConnect() {
   const address = h("input", { class: "field", placeholder: "192.168.1.20", "aria-label": "Host address" });
   const port = h("input", { class: "field", value: "6379", inputmode: "numeric", "aria-label": "Redis port" });
   connectEls = {
+    password,
     laptop: h("div"),
     problem: h("div"),
     hosts: h("div", { class: "hostlist" }),
@@ -317,6 +334,12 @@ function drawConnect() {
       : status("failed", "Not running. Start Ollama, then this updates by itself.")),
     h("dt", { text: "Model" }), h("dd", null, modelPicker(d.me, d.model, d.models, d.ollama)),
   ));
+  // Show a remembered password that arrived after the box was built, but only
+  // into an empty box: whatever is already in it, typed or filled in by a
+  // password manager, is left alone.
+  if (!ui.passwordTouched && ui.password && connectEls.password.value === "" && document.activeElement !== connectEls.password) {
+    connectEls.password.value = ui.password;
+  }
   connectEls.hostButton.disabled = ui.connecting;
   connectEls.hostButton.textContent = ui.connecting ? "Connecting…" : "Host a cluster on this laptop";
   region(connectEls.hosts, [ui.hosts, ui.connecting], () => {
@@ -340,11 +363,18 @@ function drawConnect() {
 async function connect(body) {
   if (ui.connecting) return;
   if (body.role === "member" && !body.address) { ui.connectProblem = "Enter the host's address."; render(); return; }
+  // Read the box itself, before anything is redrawn: a password manager or a
+  // paste can fill it without the page being told, and then what was
+  // remembered here would be stale. Spaces and line breaks picked up by
+  // copying are dropped.
+  const typed = connectEls && connectEls.password ? connectEls.password.value : (ui.password || "");
+  ui.password = typed.trim();
+  ui.passwordTouched = true;
   ui.connecting = true;
   ui.connectProblem = "";
   render();
   try {
-    await api("/api/connect", { ...body, password: ui.password || "" });
+    await api("/api/connect", { ...body, password: ui.password });
     await refresh();
   } catch (error) {
     ui.connectProblem = error.message;
@@ -409,6 +439,7 @@ const KINDS = [
 
 function buildCluster() {
   els = {
+    brand: brand(),
     where: h("span", { class: "where" }),
     pills: h("span", { class: "pills" }),
     link: h("span"),
@@ -423,7 +454,7 @@ function buildCluster() {
     h("div", { class: "shell" },
       h("div", null,
         h("header", { class: "topbar" },
-          brand(),
+          els.brand,
           els.where,
           h("span", { class: "grow" }),
           els.pills,
@@ -463,6 +494,8 @@ function drawCluster() {
     h("span", null, h("b", { text: d.role === "host" ? d.me : (d.host ? d.host.name : "") }), "'s cluster"),
     h("span", { class: d.role === "host" ? "tag accent" : "tag", text: d.role === "host" ? "you host" : "member" }),
   ]);
+  // The dots of the logo hop in turn while laptops are passing work around.
+  els.brand.classList.toggle("busy", Boolean(d.job && d.job.running > 0));
   const everyone = Object.values(d.workers || {});
   const tally = [everyone.length, everyone.filter((w) => w.vision).length, d.job ? d.job.running : 0, d.job ? d.job.pending : 0];
   region(els.pills, tally, () => [

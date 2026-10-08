@@ -117,7 +117,28 @@ def test_wrong_password_is_explained(make_app):
         "/api/connect", json={"role": "host", "password": PASSWORD + "-wrong", "port": PORT}
     )
     assert reply.status_code == 400
-    assert reply.json()["error"] == "That password was not accepted."
+    assert reply.json()["error"].startswith("That password was not accepted.")
+
+
+@pytest.mark.skipif(not PASSWORD, reason="needs a Redis that has a password")
+def test_a_missing_password_is_told_apart_from_a_wrong_one(make_app):
+    client, _ = make_app()
+    reply = client.post("/api/connect", json={"role": "host", "password": "", "port": PORT})
+    assert reply.status_code == 400
+    assert reply.json()["error"] == "This cluster needs a password. Enter the one the host uses."
+
+
+def test_a_password_given_to_a_redis_without_one_is_explained():
+    from lapclusters.app.node import _password_problem
+
+    reply = Exception("AUTH <password> called without any password configured for the default user")
+    assert _password_problem("redis://:secret@localhost:6379/0", reply) == (
+        "This cluster's Redis has no password, but one was entered. "
+        "Clear the password box and try again."
+    )
+    assert _password_problem("redis://:secret@localhost:6379/0", Exception("WRONGPASS")).startswith(
+        "That password was not accepted."
+    )
 
 
 def test_hosting_without_redis_says_how_to_start_it(make_app):
