@@ -2,10 +2,8 @@ from __future__ import annotations
 
 from typing import Callable
 
-import redis
-
 from lapclusters import config, llm
-from lapclusters.taskqueue import TaskQueue
+from lapclusters.taskqueue import TaskQueue, connect
 
 
 def process_one(
@@ -30,8 +28,7 @@ def process_one(
 
 
 def main() -> None:
-    client = redis.Redis.from_url(config.REDIS_URL, decode_responses=True)
-    queue = TaskQueue(client)
+    queue = TaskQueue(connect(config.REDIS_URL))
     queue.ensure_group()
     print(f"Worker {config.WORKER_NAME} ready, model {config.MODEL}")
     while True:

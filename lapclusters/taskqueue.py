@@ -7,6 +7,12 @@ from dataclasses import dataclass
 import redis
 
 
+def connect(url: str) -> redis.Redis:
+    # The read timeout must stay longer than any block_ms passed to claim(),
+    # otherwise an idle worker's wait is cut off with a TimeoutError.
+    return redis.Redis.from_url(url, decode_responses=True, socket_timeout=60)
+
+
 @dataclass
 class Task:
     entry_id: str

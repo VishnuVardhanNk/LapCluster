@@ -1,16 +1,15 @@
 import os
 
 import pytest
-import redis
 
-from lapclusters.taskqueue import TaskQueue
+from lapclusters.taskqueue import TaskQueue, connect
 
 TEST_REDIS_URL = os.environ.get("TEST_REDIS_URL", "redis://localhost:6379/15")
 
 
 @pytest.fixture
 def queue():
-    client = redis.Redis.from_url(TEST_REDIS_URL, decode_responses=True)
+    client = connect(TEST_REDIS_URL)
     client.flushdb()
     task_queue = TaskQueue(client)
     task_queue.ensure_group()

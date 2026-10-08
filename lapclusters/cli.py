@@ -5,10 +5,8 @@ import sys
 import time
 import uuid
 
-import redis
-
 from lapclusters import config
-from lapclusters.taskqueue import TaskQueue
+from lapclusters.taskqueue import TaskQueue, connect
 
 
 def submit_and_wait(
@@ -34,8 +32,7 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=300.0)
     args = parser.parse_args()
 
-    client = redis.Redis.from_url(config.REDIS_URL, decode_responses=True)
-    queue = TaskQueue(client)
+    queue = TaskQueue(connect(config.REDIS_URL))
     queue.ensure_group()
     try:
         info = submit_and_wait(queue, args.prompt, timeout_s=args.timeout)
