@@ -1,4 +1,4 @@
-# LapClusters demo video script
+﻿# LapClusters demo video script
 
 Read the plain text aloud. The lines in brackets are what to do on screen while
 you say it. About three minutes.
@@ -10,7 +10,7 @@ warm, clear the history, and click Leave so you begin on the landing page.
 
 **[Show the landing page.]**
 
-Hi, we are team [team name], and this is LapClusters.
+Hi, we are team ReLUactivation, and this is LapClusters.
 
 Small teams want to use AI on their own code and documents. But cloud AI costs
 money for every question, and you have to send your private files to someone

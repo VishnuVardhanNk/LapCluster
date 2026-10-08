@@ -6,7 +6,7 @@
 
 ## Team
 
-**Team Name:** [Team Name]
+**Team Name:** ReLUactivation
 
 
 | Member            | Contribution                                                                 |
