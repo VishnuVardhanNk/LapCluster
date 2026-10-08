@@ -53,6 +53,55 @@ def _explain(exc: Exception, timeout: float) -> str:
     return "Ollama is not running"
 
 
+def _model_provider() -> str:
+    return config.MODEL_PROVIDER.lower()
+
+
+def _generate_url() -> str:
+    if _model_provider() == "llama_cpp":
+        return f"{config.LLAMA_CPP_URL}/completion"
+    return f"{config.OLLAMA_URL}/api/generate"
+
+
+def _build_body(
+    prompt: str,
+    schema: dict | None,
+    on_chunk: Callable[[str | None], None] | None,
+    context_tokens: int,
+    images: list[str] | None = None,
+) -> dict:
+    if _model_provider() == "llama_cpp":
+        body = {
+            "model": config.MODEL,
+            "prompt": prompt,
+            "stream": on_chunk is not None,
+            "n_predict": context_tokens,
+        }
+        if images:
+            body["images"] = images
+        return body
+
+    body = {
+        "model": config.MODEL,
+        "prompt": prompt,
+        "stream": on_chunk is not None,
+        "options": {"num_ctx": context_tokens},
+    }
+    if schema is not None:
+        body["format"] = schema
+    if images:
+        body["images"] = images
+    return body
+
+
+def _extract_piece(data: dict) -> str:
+    if data.get("error"):
+        raise ModelError(str(data["error"]))
+    if _model_provider() == "llama_cpp":
+        return data.get("content") or data.get("text") or ""
+    return data.get("response") or ""
+
+
 def generate(
     prompt: str,
     schema: dict | None = None,
@@ -75,23 +124,16 @@ def generate(
     """
     if timeout is None:
         timeout = config.MODEL_TIMEOUT_S
-    body = {
-        "model": config.MODEL,
-        "prompt": prompt,
-        "stream": on_chunk is not None,
-        "options": {"num_ctx": int(context or config.MODEL_CONTEXT)},
-    }
-    if schema is not None:
-        body["format"] = schema
-    if images:
-        body["images"] = images
-    url = f"{config.OLLAMA_URL}/api/generate"
+    context_tokens = int(context or config.MODEL_CONTEXT)
+    body = _build_body(prompt, schema, on_chunk, context_tokens, images)
+    url = _generate_url()
     for attempt in (1, 2):
         try:
             if on_chunk is None:
                 response = httpx.post(url, json=body, timeout=timeout)
                 response.raise_for_status()
-                return response.json()["response"]
+                data = response.json()
+                return _extract_piece(data)
             return _stream(url, body, timeout, on_chunk)
         except (httpx.HTTPError, ModelError) as exc:
             if attempt == 2 or not _is_temporary(exc):
@@ -112,19 +154,31 @@ def _stream(url: str, body: dict, timeout: float, on_chunk: Callable[[str | None
             if not line.strip():
                 continue
             data = json.loads(line)
-            if data.get("error"):
-                raise ModelError(str(data["error"]))
-            piece = data.get("response") or ""
+            piece = _extract_piece(data)
             if piece:
                 pieces.append(piece)
                 on_chunk(piece)
-            if data.get("done"):
+            if _model_provider() == "llama_cpp" and (data.get("stop") or data.get("stopped")):
+                break
+            if _model_provider() != "llama_cpp" and data.get("done"):
                 break
     return "".join(pieces)
 
 
 def list_models(timeout: float = 5.0) -> list[str]:
-    """Names of the models installed on this laptop's Ollama."""
+    """Names of the models available from this laptop's local model server."""
+    if _model_provider() == "llama_cpp":
+        try:
+            response = httpx.get(f"{config.LLAMA_CPP_URL}/v1/models", timeout=timeout)
+            response.raise_for_status()
+            payload = response.json()
+            items = payload.get("data", []) if isinstance(payload, dict) else []
+            models = [item.get("id") or item.get("name") for item in items if isinstance(item, dict)]
+            if models:
+                return sorted(str(model) for model in models)
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
+            pass
+        return [config.MODEL]
     response = httpx.get(f"{config.OLLAMA_URL}/api/tags", timeout=timeout)
     response.raise_for_status()
     return sorted(model["name"] for model in response.json().get("models", []))

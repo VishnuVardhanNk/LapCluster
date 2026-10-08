@@ -100,9 +100,9 @@ flowchart LR
 | Frontend        | Hand-written HTML, CSS and JavaScript, no build step     |
 | Backend         | Python 3.11+, FastAPI, uvicorn, redis-py, httpx, python-dotenv, pypdf, Pillow |
 | Database        | Redis 7 (Streams, consumer groups, hashes, sets)         |
-| AI / ML         | Gemma 4 E4B (`gemma4:e4b`) served locally by Ollama      |
+| AI / ML         | Gemma 4 E4B (`gemma4:e4b`) served locally by Ollama or llama.cpp |
 | Infrastructure  | Docker (runs Redis), Git (clones repositories), pytest   |
-| APIs / Services | Ollama local HTTP API. No cloud services                 |
+| APIs / Services | Local model server over HTTP (Ollama or llama.cpp). No cloud services |
 
 
 If a category or technology is not implemented in the project, specify `N/A` instead of leaving the field blank.
@@ -117,9 +117,9 @@ If a category or technology is not implemented in the project, specify `N/A` ins
 - `lapclusters/worker.py` runs a loop: claim one task through the `workers` consumer group, run it on the model, store the result, acknowledge the task. A background thread refreshes the worker's heartbeat every 5 seconds.
 - `lapclusters/discovery.py` and `lapclusters/host.py` let workers find the host. The host answers a UDP broadcast question with its name and Redis port; the Redis password is never sent over the network this way.
 - `lapclusters/app/` is the dashboard. `server.py` is a local web server, `node.py` runs this laptop's worker and its host duties, `views.py` shapes what Redis holds for display, and `static/` is the page. The page asks its own laptop's server for the cluster state once a second.
-- `lapclusters/llm.py` makes the HTTP call to Ollama on the same laptop, streaming the reply so it can be shown while it is written.
+- `lapclusters/llm.py` makes the HTTP call to the configured local model backend on the same laptop, streaming the reply so it can be shown while it is written.
 - `lapclusters/cli.py` adds one plain-prompt task and polls its status record until it is `done` or `failed`.
-- `lapclusters/config.py` reads the Redis address, Ollama address, model name and worker name from environment variables or a `.env` file.
+- `lapclusters/config.py` reads the Redis address, model provider, local model endpoint, model name and worker name from environment variables or a `.env` file.
 
 ### Technical Decisions
 
@@ -168,10 +168,11 @@ The submitted application should be functional and accessible through the provid
 
 ### Open Source Components
 
-- **Ollama:** runs Gemma 4 locally and exposes it over HTTP.
+- **Ollama:** optional local backend that runs Gemma 4 and exposes it over HTTP.
+- **llama.cpp:** alternative local backend supported through its HTTP completion endpoint.
 - **Redis:** task queue and status store.
 - **redis-py:** Python client for Redis.
-- **httpx:** HTTP client used to call Ollama.
+- **httpx:** HTTP client used to call the local model server.
 - **python-dotenv:** loads settings from a `.env` file.
 - **pytest:** test runner.
 - **Docker:** runs the Redis server.
@@ -184,7 +185,7 @@ No datasets or external APIs are used.
 
 - Python 3.11 or newer
 - Docker Desktop (to run Redis)
-- Ollama with the `gemma4:e4b` model pulled
+- A local model server: either Ollama with the `gemma4:e4b` model pulled, or a llama.cpp server serving a compatible model
 
 A fuller install guide for teammates is in [docs/SETUP.md](docs/SETUP.md).
 
@@ -208,7 +209,9 @@ Copy `.env.example` to `.env` and adjust if needed. Every value has a working de
 
 ```env
 REDIS_URL=redis://localhost:6379/0
+MODEL_PROVIDER=ollama
 OLLAMA_URL=http://localhost:11434
+LLAMA_CPP_URL=http://localhost:8080
 MODEL=gemma4:e4b
 WORKER_NAME=
 MODEL_TIMEOUT_S=600
@@ -216,7 +219,7 @@ MODEL_CONTEXT=32768
 PART_CHARS=48000
 ```
 
-`MODEL_CONTEXT` is how many tokens the model may read and write per request. The default of 32768 was measured to fit Gemma 4 E4B entirely on an 8 GB graphics card (an RTX 4060 laptop GPU, about 5.1 GB in use). The host's value is sent with every task, so the whole cluster uses the same. Lower it, together with `PART_CHARS`, if the laptops are weaker.
+Set `MODEL_PROVIDER=llama_cpp` and point `LLAMA_CPP_URL` at your local llama.cpp server when using that backend instead of Ollama. `MODEL_CONTEXT` is how many tokens the model may read and write per request. The default of 32768 was measured to fit Gemma 4 E4B entirely on an 8 GB graphics card (an RTX 4060 laptop GPU, about 5.1 GB in use). The host's value is sent with every task, so the whole cluster uses the same. Lower it, together with `PART_CHARS`, if the laptops are weaker.
 
 ### Running the Project
 

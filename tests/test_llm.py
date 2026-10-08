@@ -46,6 +46,24 @@ def test_passes_pictures_and_a_context_size_when_given(replies):
     assert sent[0]["options"]["num_ctx"] == 4096
 
 
+def test_uses_llama_cpp_when_configured(monkeypatch):
+    sent = []
+
+    def post(url, json=None, timeout=None, **kwargs):
+        sent.append((url, json))
+        return httpx.Response(200, json={"content": "hello"}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(llm.config, "MODEL_PROVIDER", "llama_cpp")
+    monkeypatch.setattr(llm.config, "MODEL", "test-model")
+    monkeypatch.setattr(llm.config, "LLAMA_CPP_URL", "http://localhost:8080")
+    monkeypatch.setattr(llm.httpx, "post", post)
+
+    assert llm.generate("hi") == "hello"
+    assert sent[0][0] == "http://localhost:8080/completion"
+    assert sent[0][1]["prompt"] == "hi"
+    assert sent[0][1]["model"] == "test-model"
+
+
 def test_retries_once_when_the_model_server_has_a_hiccup(replies):
     # Ollama answers 500 when the model fails to load, which is often temporary.
     script, sent = replies

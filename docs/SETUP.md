@@ -49,7 +49,11 @@ Download: https://www.python.org/downloads/ (on Windows, tick "Add Python to PAT
 python --version
 ```
 
-### 3. Ollama and the Gemma 4 model
+### 3. Local model backend
+
+Choose either Ollama or llama.cpp for the model server on each laptop.
+
+#### Option A: Ollama + Gemma 4
 
 Download: https://ollama.com/download (use a recent version, 0.22.0 or newer).
 
@@ -62,6 +66,18 @@ The download is several gigabytes, so do it on good Wi-Fi. Then check it answers
 ```bash
 ollama run gemma4:e4b "Say hello in one sentence."
 ```
+
+#### Option B: llama.cpp
+
+Start a local llama.cpp server with a model compatible with the repository, then point `LLAMA_CPP_URL` at it, for example:
+
+```env
+MODEL_PROVIDER=llama_cpp
+LLAMA_CPP_URL=http://localhost:8080
+MODEL=your-model-name
+```
+
+The worker accepts either backend as long as the local server is reachable and the chosen model name is available.
 
 ### 4. A GitHub account
 
