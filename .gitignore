@@ -10,3 +10,6 @@ __pycache__/
 
 # Secrets
 .env
+
+# Generated review reports
+review-report.md
