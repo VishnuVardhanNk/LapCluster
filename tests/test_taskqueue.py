@@ -1,19 +1,14 @@
-from lapclusters.taskqueue import TaskQueue, connect
-from tests.conftest import TEST_REDIS_URL
-
-
-def test_idle_claim_outlasts_default_socket_timeout():
+def test_idle_claim_outlasts_default_socket_timeout(queue):
     # redis-py times out socket reads after 5 seconds by default, which made an
     # idle worker crash while waiting for its first task.
-    client = connect(TEST_REDIS_URL)
-    client.flushdb()
-    idle_queue = TaskQueue(client)
-    idle_queue.ensure_group()
-    try:
-        assert idle_queue.claim("worker-a", block_ms=5500) is None
-    finally:
-        client.flushdb()
-        client.close()
+    assert queue.claim("worker-a", block_ms=5500) is None
+
+
+def test_add_task_registers_task_under_its_job(queue):
+    first = queue.add_task("job1", {"prompt": "a"})
+    second = queue.add_task("job1", {"prompt": "b"})
+    queue.add_task("job2", {"prompt": "c"})
+    assert sorted(queue.job_tasks("job1")) == sorted([first, second])
 
 
 def test_new_task_is_pending(queue):

@@ -4,6 +4,7 @@ import pytest
 
 from lapclusters.taskqueue import TaskQueue, connect
 
+# Database 15 keeps test data away from real tasks, which live in database 0.
 TEST_REDIS_URL = os.environ.get("TEST_REDIS_URL", "redis://localhost:6379/15")
 
 

@@ -1,3 +1,5 @@
+"""Command-line tool: send one prompt to the cluster and print the answer."""
+
 from __future__ import annotations
 
 import argparse
@@ -6,7 +8,7 @@ import time
 import uuid
 
 from lapclusters import config
-from lapclusters.taskqueue import TaskQueue, connect
+from lapclusters.taskqueue import CONNECTION_ERRORS, FAILED, FINISHED, TaskQueue, connect
 
 
 def submit_and_wait(
@@ -16,7 +18,7 @@ def submit_and_wait(
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         info = queue.get(task_id)
-        if info.get("status") in ("done", "failed"):
+        if info.get("status") in FINISHED:
             return info
         time.sleep(poll_s)
     raise TimeoutError(
@@ -33,13 +35,16 @@ def main() -> int:
     args = parser.parse_args()
 
     queue = TaskQueue(connect(config.REDIS_URL))
-    queue.ensure_group()
     try:
+        queue.ensure_group()
         info = submit_and_wait(queue, args.prompt, timeout_s=args.timeout)
+    except CONNECTION_ERRORS:
+        print("Cannot reach Redis. Check REDIS_URL and that Redis is running.", file=sys.stderr)
+        return 1
     except TimeoutError as exc:
         print(exc, file=sys.stderr)
         return 1
-    if info["status"] == "failed":
+    if info["status"] == FAILED:
         print(f"Task failed: {info.get('error', 'unknown error')}", file=sys.stderr)
         return 1
     print(info["result"])

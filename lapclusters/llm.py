@@ -1,6 +1,11 @@
+"""The call to the local model."""
+
 import httpx
 
 from lapclusters import config
+
+# Ollama defaults to a 4096-token context, which is too small for source files.
+CONTEXT_TOKENS = 8192
 
 
 def generate(prompt: str, timeout: float = 300.0) -> str:
@@ -10,7 +15,7 @@ def generate(prompt: str, timeout: float = 300.0) -> str:
             "model": config.MODEL,
             "prompt": prompt,
             "stream": False,
-            "options": {"num_ctx": 8192},
+            "options": {"num_ctx": CONTEXT_TOKENS},
         },
         timeout=timeout,
     )
