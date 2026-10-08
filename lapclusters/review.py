@@ -99,13 +99,27 @@ def parse_findings(text: str) -> list[dict]:
 
 def run(payload: dict[str, str], generate: Callable[..., str]) -> str:
     """Review the file in a task payload and return its findings as a JSON list."""
+    return run_detailed(payload, generate)[0]
+
+
+def run_detailed(
+    payload: dict[str, str], generate: Callable[..., str]
+) -> tuple[str, dict[str, str]]:
+    """Like run(), and also return what to keep for inspection: the exact
+    prompt, the model's raw reply, and a count of findings per severity."""
     if "path" not in payload or "content" not in payload:
         raise TaskError("review task needs a path and content")
     prompt = build_prompt(payload["path"], payload["content"])
+    details = {"prompt": prompt, "raw": ""}
     problem = ""
     for _attempt in range(2):
+        details["raw"] = generate(prompt, FINDINGS_SCHEMA)
         try:
-            return json.dumps(parse_findings(generate(prompt, FINDINGS_SCHEMA)))
+            findings = parse_findings(details["raw"])
         except ValueError as exc:
             problem = str(exc)
-    raise TaskError(f"model returned invalid JSON twice: {problem}")
+            continue
+        for level in SEVERITIES:
+            details[f"count_{level}"] = str(sum(1 for f in findings if f["severity"] == level))
+        return json.dumps(findings), details
+    raise TaskError(f"model returned invalid JSON twice: {problem}", details)

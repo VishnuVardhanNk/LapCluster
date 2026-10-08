@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Callable
 
 from lapclusters import config, discovery
-from lapclusters.repo import RepoError, SourceFile, collect_files, open_repo
+from lapclusters.repo import Collected, RepoError, SourceFile, collect_files, open_repo
 from lapclusters.review import SEVERITIES
 from lapclusters.taskqueue import (
     CONNECTION_ERRORS,
@@ -24,8 +24,8 @@ from lapclusters.taskqueue import (
 )
 
 
-def start_job(queue: TaskQueue, files: list[SourceFile]) -> str:
-    job_id = uuid.uuid4().hex
+def start_job(queue: TaskQueue, files: list[SourceFile], job_id: str | None = None) -> str:
+    job_id = job_id or uuid.uuid4().hex
     for source in files:
         queue.add_task(
             job_id,
@@ -33,6 +33,42 @@ def start_job(queue: TaskQueue, files: list[SourceFile]) -> str:
             name=source.path,
         )
     return job_id
+
+
+def prepare_job(queue: TaskQueue, source: str, started_by: str = "") -> str:
+    """Record a review that is about to start, so it is visible straight away
+    even while its repository is still being cloned."""
+    job_id = uuid.uuid4().hex
+    queue.create_job(job_id, source=source, status="preparing", started_by=started_by)
+    return job_id
+
+
+def fill_job(queue: TaskQueue, job_id: str, source: str) -> Collected:
+    """Read the repository and queue one task per file for a prepared job.
+
+    A repository that cannot be read marks the job failed and raises RepoError.
+    """
+    try:
+        with open_repo(source) as root:
+            collected = collect_files(root)
+        if not collected.files:
+            raise RepoError("No source files found to review.")
+    except RepoError as exc:
+        queue.close_job(job_id, status="failed", error=str(exc), finished_at=f"{queue.now():.3f}")
+        raise
+    if queue.job_meta(job_id).get("status") == "cancelled":
+        # Cancelled while the repository was still being read: queue nothing.
+        return collected
+    start_job(queue, collected.files, job_id)
+    queue.update_job(
+        job_id,
+        status="running",
+        total=str(len(collected.files)),
+        skipped=json.dumps(collected.skipped),
+        queued_at=f"{queue.now():.3f}",
+    )
+    queue.log_event("review", f"Review of {source} started: {len(collected.files)} files")
+    return collected
 
 
 def wait_for_job(
@@ -47,13 +83,15 @@ def wait_for_job(
     deadline = time.monotonic() + timeout_s
     reported = -1
     while True:
-        infos = queue.get_many(task_ids)
-        finished = sum(1 for info in infos.values() if info.get("status") in FINISHED)
+        # Only the status is read while waiting; the full records hold each
+        # file's prompt and reply and are fetched once at the end.
+        statuses = queue.get_fields(task_ids, ["status"])
+        finished = sum(1 for info in statuses.values() if info.get("status") in FINISHED)
         if on_progress and finished != reported:
             on_progress(finished, len(task_ids))
             reported = finished
         if finished == len(task_ids):
-            return infos
+            return queue.get_many(task_ids)
         if time.monotonic() >= deadline:
             raise TimeoutError(
                 f"Only {finished} of {len(task_ids)} files were reviewed within "
@@ -84,7 +122,10 @@ def build_report(
             not_reviewed.append((name, info.get("error", "not finished")))
             continue
         reviewed += 1
-        per_worker[info.get("worker", "unknown")] += 1
+        reviewer = info.get("worker", "unknown")
+        if info.get("model"):
+            reviewer += f" ({info['model']})"
+        per_worker[reviewer] += 1
         for finding in json.loads(info.get("result") or "[]"):
             findings.append({**finding, "file": name})
 
@@ -133,25 +174,20 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        with open_repo(args.source) as root:
-            collected = collect_files(root)
-    except RepoError as exc:
-        print(exc, file=sys.stderr)
-        return 1
-    if not collected.files:
-        print("No source files found to review.", file=sys.stderr)
-        return 1
-
-    try:
         queue = TaskQueue(connect(discovery.resolve(config.REDIS_URL)))
     except discovery.DiscoveryError as exc:
         print(exc, file=sys.stderr)
         return 1
-    started = time.monotonic()
     job_id = None
     try:
         queue.ensure_group()
-        job_id = start_job(queue, collected.files)
+        job_id = prepare_job(queue, args.source, started_by=config.WORKER_NAME)
+        try:
+            collected = fill_job(queue, job_id, args.source)
+        except RepoError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        started = time.monotonic()
         workers = queue.workers()
         print(f"Queued {len(collected.files)} files. Live workers: {len(workers)}")
         if not workers:
@@ -168,6 +204,8 @@ def main() -> int:
     except (TimeoutError, KeyboardInterrupt) as exc:
         # Do not leave the rest of the job queued in front of the next review.
         cancelled = queue.cancel_job(job_id) if job_id else 0
+        if job_id:
+            queue.update_job(job_id, status="cancelled")
         reason = str(exc) or "Stopped."
         print(f"{reason} Cancelled {cancelled} unstarted files.", file=sys.stderr)
         return 1

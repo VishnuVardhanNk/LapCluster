@@ -105,6 +105,45 @@ def test_report_counts_files_per_worker():
     assert "laptop-2: 1 file" in report
 
 
+def test_fill_job_queues_the_files_and_records_the_review(queue):
+    from lapclusters.orchestrator import fill_job, prepare_job
+
+    job_id = prepare_job(queue, str(SAMPLE_REPO), started_by="host-pc")
+    assert queue.job_meta(job_id)["status"] == "preparing"
+    collected = fill_job(queue, job_id, str(SAMPLE_REPO))
+    meta = queue.job_meta(job_id)
+    assert len(collected.files) == 3
+    assert (meta["status"], meta["total"], meta["started_by"]) == ("running", "3", "host-pc")
+    assert len(queue.job_tasks(job_id)) == 3
+    assert queue.recent_jobs() == [job_id]
+
+
+def test_fill_job_marks_an_unreadable_source_as_failed(queue, tmp_path):
+    from lapclusters.orchestrator import fill_job, prepare_job
+    from lapclusters.repo import RepoError
+
+    job_id = prepare_job(queue, str(tmp_path / "missing"))
+    with pytest.raises(RepoError):
+        fill_job(queue, job_id, str(tmp_path / "missing"))
+    meta = queue.job_meta(job_id)
+    assert meta["status"] == "failed"
+    assert "Not a folder" in meta["error"]
+
+    empty = prepare_job(queue, str(tmp_path))
+    with pytest.raises(RepoError, match="No source files"):
+        fill_job(queue, empty, str(tmp_path))
+
+
+def test_fill_job_queues_nothing_for_a_review_cancelled_while_preparing(queue):
+    from lapclusters.orchestrator import fill_job, prepare_job
+
+    job_id = prepare_job(queue, str(SAMPLE_REPO))
+    queue.update_job(job_id, status="cancelled")
+    fill_job(queue, job_id, str(SAMPLE_REPO))
+    assert queue.job_tasks(job_id) == []
+    assert queue.job_meta(job_id)["status"] == "cancelled"
+
+
 def test_sample_repo_goes_through_the_whole_pipeline(queue):
     collected = collect_files(SAMPLE_REPO)
     assert [f.path for f in collected.files] == ["app.js", "calculator.py", "users.py"]

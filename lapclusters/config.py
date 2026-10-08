@@ -20,4 +20,7 @@ WORKER_NAME = _setting("WORKER_NAME", socket.gethostname())
 # Only needed when REDIS_URL uses the host name "auto" and several hosts answer.
 CLUSTER_HOST = _setting("CLUSTER_HOST", "")
 # Seconds to wait for one model reply. Laptops without a GPU can be very slow.
-MODEL_TIMEOUT_S = float(_setting("MODEL_TIMEOUT_S", "600"))
+try:
+    MODEL_TIMEOUT_S = float(_setting("MODEL_TIMEOUT_S", "600"))
+except ValueError:
+    raise SystemExit("MODEL_TIMEOUT_S in .env must be a number of seconds, such as 600.")

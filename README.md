@@ -2,7 +2,7 @@
 
 > Turn the laptops your team already owns into a private AI cluster that reviews a whole code repository in parallel, with no cloud bill and no code leaving the room.
 
-**Status:** the backend is built (checkpoints 1 to 3 of 5). A repository can be reviewed end to end, several laptops share the work, and a worker that dies mid-job has its task taken over. It has been run across two laptops on a phone hotspot. The dashboard and a proper benchmark are still to come and are marked as planned below.
+**Status:** the backend is built (checkpoints 1 to 3 of 5). A repository can be reviewed end to end, several laptops share the work, and a worker that dies mid-job has its task taken over. It has been run across two laptops on a phone hotspot. The dashboard app is built and has been exercised on one laptop, with a second copy joining it as a member; it has not yet been run on two separate laptops. Capability routing, cross-checking and a proper benchmark are still to come and are marked as planned below.
 
 ## Team
 
@@ -44,11 +44,16 @@ Built:
 - Worker heartbeats, and automatic takeover of a task whose worker has died. A task abandoned three times is marked failed so a job always finishes.
 - Automatic host discovery on the local network: workers find the host without an IP address being typed, and follow it if its address changes.
 - A command-line tool that submits a single prompt and waits for the answer.
+- A dashboard app on every laptop: host or join from a list, start and cancel reviews, and watch each laptop's current file.
+- Full transparency per file: the model's reply streamed live, the parsed findings, the raw reply, the exact prompt, and a timeline of what happened to it.
+- Interchangeable models: each laptop reports the models it has installed, its owner or the host can switch between them, and every file records which model and laptop reviewed it.
+- An activity feed and a history of reviews with their times and laptops.
 
 Planned:
 
 - A run across all four laptops.
-- A live dashboard showing connected laptops and task progress.
+- Routing large files only to laptops whose model can fit them.
+- Cross-checking high-severity findings on a second laptop and model.
 - A benchmark comparing one laptop against the full cluster.
 
 ## Innovation and Differentiation
@@ -73,18 +78,17 @@ flowchart LR
     W2 -->|result, status, heartbeat| R
     R -->|poll task status| ORC
     ORC --> REP[review-report.md]
-    R -.-> D[Dashboard<br/>planned]
+    R -->|state, live output, events| D[Dashboard app<br/>on every laptop]
+    D -->|start review, switch model| R
 ```
-
-Solid lines are built. The dotted line is planned.
 
 ### Technology Stack
 
 
 | Category        | Technologies                                             |
 | --------------- | -------------------------------------------------------- |
-| Frontend        | N/A (dashboard page planned)                             |
-| Backend         | Python 3.11+, redis-py, httpx, python-dotenv             |
+| Frontend        | Hand-written HTML, CSS and JavaScript, no build step     |
+| Backend         | Python 3.11+, FastAPI, uvicorn, redis-py, httpx, python-dotenv |
 | Database        | Redis 7 (Streams, consumer groups, hashes, sets)         |
 | AI / ML         | Gemma 4 E4B (`gemma4:e4b`) served locally by Ollama      |
 | Infrastructure  | Docker (runs Redis), Git (clones repositories), pytest   |
@@ -101,7 +105,8 @@ If a category or technology is not implemented in the project, specify `N/A` ins
 - `lapclusters/review.py` builds the review prompt (with numbered lines) and cleans up the model's JSON reply.
 - `lapclusters/worker.py` runs a loop: claim one task through the `workers` consumer group, run it on the model, store the result, acknowledge the task. A background thread refreshes the worker's heartbeat every 5 seconds.
 - `lapclusters/discovery.py` and `lapclusters/host.py` let workers find the host. The host answers a UDP broadcast question with its name and Redis port; the Redis password is never sent over the network this way.
-- `lapclusters/llm.py` makes the HTTP call to Ollama on the same laptop.
+- `lapclusters/app/` is the dashboard. `server.py` is a local web server, `node.py` runs this laptop's worker and its host duties, `views.py` shapes what Redis holds for display, and `static/` is the page. The page asks its own laptop's server for the cluster state once a second.
+- `lapclusters/llm.py` makes the HTTP call to Ollama on the same laptop, streaming the reply so it can be shown while it is written.
 - `lapclusters/cli.py` adds one plain-prompt task and polls its status record until it is `done` or `failed`.
 - `lapclusters/config.py` reads the Redis address, Ollama address, model name and worker name from environment variables or a `.env` file.
 
@@ -197,7 +202,28 @@ MODEL_TIMEOUT_S=600
 
 ### Running the Project
 
-Start a worker:
+Start the app. It opens in your browser:
+
+```bash
+python -m lapclusters
+```
+
+On the Connect screen, enter the cluster password (the Redis password) and choose:
+
+- **Host** on the laptop that runs Redis. It starts announcing the cluster and reviewing files.
+- **Join** on every other laptop. Hosts found on the network are listed; pick one.
+
+The app runs that laptop's worker itself, so no second terminal is needed. From then on:
+
+- The **Laptops** column shows every laptop, the file it is on, and its model. Change your own laptop's model from its card; the host can change anyone's. A change applies from the laptop's next file.
+- On the host, paste a folder or git URL into **Review** and press Start. Each file is a row; click one to watch the model's reply as it is written, then see its findings, the raw reply, the exact prompt and a timeline.
+- **Report** lists every finding with filters and a download. **History** keeps each review's time and laptops for comparison. **Activity** records joins, departures, takeovers and model changes.
+
+The app listens on `127.0.0.1` only. Laptops never talk to each other's app; they share state through Redis.
+
+#### Without the app
+
+Everything also works from terminals. Start a worker:
 
 ```bash
 python -m lapclusters.worker
