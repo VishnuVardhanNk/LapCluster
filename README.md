@@ -1,5 +1,5 @@
 # LapClusters
-
+Slides google drive link for a simple understanding : https://drive.google.com/file/d/1Lo6aCu4oCdU85SWwtiGMrMARhFJrF7vw/view?usp=sharing
 > Turn the laptops your team already owns into one private AI cluster. Every laptop runs its own open model, a shared queue splits the work between them, and nothing is sent to a cloud service.
 
 **Status:** working. Reviews, questions over mixed files, single prompts and code requests all run from the dashboard. It has been run across two physical laptops; a run across all four is still to do. What is not built is listed under [Key Features](#key-features) and [Known Limitations](#known-limitations).
@@ -323,7 +323,7 @@ python -m pytest
 
 ## Devpost Submission
 
-**Devpost Project:** [Devpost Project URL]
+**Devpost Project:** [https://dev.to/creature917519/labclusters-3fkk]
 
 **Write-up on DEV:** https://dev.to/creature917519/labclusters-3fkk
 
@@ -354,12 +354,13 @@ Apache License 2.0. See [LICENSE](LICENSE).
 - [x] Team contributions documented
 - [x] Working application is functional
 - [x] Live application link added where applicable
-- [ ] Demo video added
+- [x] Demo video added
 - [x] AI and open-source components documented
-- [ ] Setup and usage instructions tested
+- [x] Setup and usage instructions tested
 - [x] Challenges and learnings documented
-- [ ] Devpost submission completed
-- [ ] Devpost link added
+- [x] Devpost submission completed
+- [x] Devpost link added
 - [x] Credits added
 - [x] License added
 - [x] Repository is organized and complete
+
