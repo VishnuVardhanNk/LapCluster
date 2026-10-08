@@ -57,7 +57,10 @@ def create_app(node: Node | None = None) -> FastAPI:
     node = node or Node()
     app = FastAPI(title="LapClusters", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.node = node
-    last_model_check = {"at": 0.0}
+    # Know whether Ollama is up before the first page load, so the Connect
+    # screen never briefly claims it is not running.
+    node.runtime.refresh_models()
+    last_model_check = {"at": time.monotonic()}
 
     @app.middleware("http")
     async def local_only(request: Request, call_next):
