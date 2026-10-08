@@ -345,7 +345,7 @@ To watch tasks move through Redis, and for what each teammate builds next, see [
 
 ## Devpost Submission
 
-**Devpost Project:** [Devpost Project URL]
+[**Devpost Project:** \[Devpost Project URL\]](https://dev.to/creature917519/labclusters-3fkk)
 
 [Add the link to the team's Devpost submission. Ensure the Devpost project page is complete and contains the required project information, links, media, and team details.]
 
@@ -379,8 +379,8 @@ Apache License 2.0 is intended. The `LICENSE` file has not been added yet.
 - [x] AI and open-source components documented
 - [ ] Setup and usage instructions tested
 - [ ] Challenges and learnings documented
-- [ ] Devpost submission completed
-- [ ] Devpost link added
+- [x] Devpost submission completed
+- [x] Devpost link added
 - [x] Credits added
 - [ ] License added
 - [ ] Repository is organized and complete
