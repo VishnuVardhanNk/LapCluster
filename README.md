@@ -112,34 +112,54 @@ The submitted application should be functional and accessible through the provid
 
 ### Prerequisites
 
-- [Requirement]
-- [Requirement]
+- Python 3.11 or newer
+- Docker Desktop (to run Redis)
+- Ollama with the `gemma4:e4b` model pulled
 
 ### Installation
 
 ```bash
-git clone [repository-url]
-cd [project-directory]
-[installation-command]
+git clone https://github.com/VishnuVardhanNk/LapCluster.git
+cd LapCluster
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+docker run -d --name redis -p 6379:6379 redis:7
+ollama pull gemma4:e4b
 ```
+
+On macOS or Linux, activate the environment with `source .venv/bin/activate`.
 
 ### Environment Variables
 
+Copy `.env.example` to `.env` and adjust if needed.
+
 ```env
-[VARIABLE_NAME]=[value]
+REDIS_URL=redis://localhost:6379/0
+OLLAMA_URL=http://localhost:11434
+MODEL=gemma4:e4b
+WORKER_NAME=
 ```
-
-
 
 ### Running the Project
 
+Start a worker:
+
 ```bash
-[run-command]
+python -m lapclusters.worker
 ```
 
 ### Usage
 
-[Explain the basic steps required to use the project.]
+In a second terminal, send a prompt to the cluster:
+
+```bash
+python -m lapclusters.cli "Explain what a task queue is in one sentence."
+```
+
+The answer is printed once a worker has processed it.
+
+Run the tests with `python -m pytest`.
 
 ## Devpost Submission
 

@@ -1,0 +1,53 @@
+from __future__ import annotations
+
+import argparse
+import sys
+import time
+import uuid
+
+import redis
+
+from lapclusters import config
+from lapclusters.taskqueue import TaskQueue
+
+
+def submit_and_wait(
+    queue: TaskQueue, prompt: str, timeout_s: float = 300.0, poll_s: float = 0.5
+) -> dict[str, str]:
+    task_id = queue.add_task(uuid.uuid4().hex, {"prompt": prompt})
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        info = queue.get(task_id)
+        if info.get("status") in ("done", "failed"):
+            return info
+        time.sleep(poll_s)
+    raise TimeoutError(
+        f"No worker finished the task within {timeout_s:g} seconds. Is a worker running?"
+    )
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Send one prompt to the cluster and print the answer."
+    )
+    parser.add_argument("prompt")
+    parser.add_argument("--timeout", type=float, default=300.0)
+    args = parser.parse_args()
+
+    client = redis.Redis.from_url(config.REDIS_URL, decode_responses=True)
+    queue = TaskQueue(client)
+    queue.ensure_group()
+    try:
+        info = submit_and_wait(queue, args.prompt, timeout_s=args.timeout)
+    except TimeoutError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    if info["status"] == "failed":
+        print(f"Task failed: {info.get('error', 'unknown error')}", file=sys.stderr)
+        return 1
+    print(info["result"])
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
