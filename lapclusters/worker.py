@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import sys
+import threading
 import time
 from typing import Callable
 
-from lapclusters import config, llm
-from lapclusters.taskqueue import CONNECTION_ERRORS, TaskQueue, connect
+from lapclusters import config, llm, review
+from lapclusters.taskqueue import CONNECTION_ERRORS, TaskError, TaskQueue, connect
 
 
 def _describe(exc: Exception) -> str:
@@ -16,32 +17,62 @@ def _describe(exc: Exception) -> str:
     return f"{type(exc).__name__}: {message}" if message else type(exc).__name__
 
 
+def run_task(payload: dict[str, str], generate: Callable[..., str]) -> str:
+    """Do the work a task describes and return its result as text."""
+    if payload.get("type") == "review":
+        return review.run(payload, generate)
+    if "prompt" not in payload:
+        raise TaskError("task has no prompt")
+    return generate(payload["prompt"])
+
+
 def process_one(
     queue: TaskQueue,
     consumer: str,
-    generate: Callable[[str], str],
+    generate: Callable[..., str],
     block_ms: int = 5000,
 ) -> bool:
     """Handle at most one task. Returns False when none arrived in time."""
     task = queue.claim(consumer, block_ms=block_ms)
     if task is None:
         return False
-    if "prompt" not in task.payload:
-        queue.fail(task, "task has no prompt")
-        return True
     try:
-        result = generate(task.payload["prompt"])
+        result = run_task(task.payload, generate)
+    except TaskError as exc:
+        queue.fail(task, str(exc))
     except Exception as exc:
         queue.fail(task, _describe(exc))
-        return True
-    queue.complete(task, result)
+    else:
+        queue.complete(task, result)
     return True
+
+
+def start_heartbeat(
+    queue: TaskQueue, name: str, info: str = "", interval_s: float = 5.0
+) -> threading.Event:
+    """Keep this worker listed as alive from a background thread.
+
+    The model call blocks the main loop for a long time, so the heartbeat
+    cannot live there. Set the returned event to stop it.
+    """
+    stop = threading.Event()
+
+    def beat() -> None:
+        while not stop.is_set():
+            try:
+                queue.heartbeat(name, info)
+            except CONNECTION_ERRORS:
+                pass
+            stop.wait(interval_s)
+
+    threading.Thread(target=beat, daemon=True).start()
+    return stop
 
 
 def run_forever(
     queue: TaskQueue,
     consumer: str,
-    generate: Callable[[str], str],
+    generate: Callable[..., str],
     retry_delay_s: float = 3.0,
 ) -> None:
     while True:
@@ -57,9 +88,11 @@ def main() -> int:
     queue = TaskQueue(connect(config.REDIS_URL))
     try:
         queue.ensure_group()
+        queue.heartbeat(config.WORKER_NAME, config.MODEL)
     except CONNECTION_ERRORS:
         print("Cannot reach Redis. Check REDIS_URL and that Redis is running.", file=sys.stderr)
         return 1
+    start_heartbeat(queue, config.WORKER_NAME, config.MODEL)
     print(f"Worker {config.WORKER_NAME} ready, model {config.MODEL}")
     try:
         run_forever(queue, config.WORKER_NAME, llm.generate)

@@ -1,7 +1,10 @@
+import json
+import time
+
 import pytest
 import redis
 
-from lapclusters.worker import process_one, run_forever
+from lapclusters.worker import process_one, run_forever, start_heartbeat
 
 
 def test_process_one_completes_task(queue):
@@ -84,3 +87,33 @@ def test_run_forever_survives_a_lost_redis_connection():
     with pytest.raises(_StopLoop):
         run_forever(flaky, "w1", lambda prompt: "x", retry_delay_s=0)
     assert flaky.claims == 2
+
+
+def test_review_task_stores_findings_as_json(queue):
+    reply = '{"findings": [{"line": 2, "severity": "high", "message": "Divides by zero."}]}'
+    task_id = queue.add_task(
+        "job1", {"type": "review", "path": "calc.py", "content": "a\nb\n"}, name="calc.py"
+    )
+    process_one(queue, "w1", lambda prompt, schema=None: reply, block_ms=100)
+    info = queue.get(task_id)
+    assert info["status"] == "done"
+    assert json.loads(info["result"]) == [
+        {"line": 2, "severity": "high", "message": "Divides by zero."}
+    ]
+
+
+def test_review_task_with_unusable_replies_is_marked_failed(queue):
+    task_id = queue.add_task("job1", {"type": "review", "path": "calc.py", "content": "a\n"})
+    process_one(queue, "w1", lambda prompt, schema=None: "no json here", block_ms=100)
+    info = queue.get(task_id)
+    assert info["status"] == "failed"
+    assert info["error"].startswith("model returned invalid JSON twice")
+
+
+def test_heartbeat_keeps_worker_listed_until_stopped(queue):
+    stop = start_heartbeat(queue, "laptop-1", "gemma4:e4b", interval_s=0.05)
+    try:
+        time.sleep(0.2)
+        assert queue.workers() == {"laptop-1": "gemma4:e4b"}
+    finally:
+        stop.set()
