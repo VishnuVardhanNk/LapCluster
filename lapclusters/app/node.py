@@ -32,6 +32,21 @@ class ConnectError(Exception):
     pass
 
 
+def _password_problem(url: str, exc: Exception) -> str:
+    """Tell apart the three ways a password can be wrong, since each has a
+    different fix."""
+    sent_one = bool(urlsplit(url).password)
+    reply = str(exc).lower()
+    if sent_one and "without any password configured" in reply:
+        return (
+            "This cluster's Redis has no password, but one was entered. "
+            "Clear the password box and try again."
+        )
+    if not sent_one:
+        return "This cluster needs a password. Enter the one the host uses."
+    return "That password was not accepted. Check it against the one the host uses."
+
+
 def redis_url(password: str, host: str, port: int, db: int = 0) -> str:
     credentials = f":{quote(password, safe='')}@" if password else ""
     return f"redis://{credentials}{host}:{port}/{db}"
@@ -76,7 +91,7 @@ class Node:
             queue.client.ping()
             queue.ensure_group()
         except redis.AuthenticationError as exc:
-            raise ConnectError("That password was not accepted.") from exc
+            raise ConnectError(_password_problem(url, exc)) from exc
         except CONNECTION_ERRORS as exc:
             raise ConnectError(unreachable) from exc
         return queue
