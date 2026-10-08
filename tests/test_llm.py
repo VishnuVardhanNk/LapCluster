@@ -55,11 +55,11 @@ def test_uses_llama_cpp_when_configured(monkeypatch):
 
     monkeypatch.setattr(llm.config, "MODEL_PROVIDER", "llama_cpp")
     monkeypatch.setattr(llm.config, "MODEL", "test-model")
-    monkeypatch.setattr(llm.config, "LLAMA_CPP_URL", "http://localhost:8080")
+    monkeypatch.setattr(llm.config, "LLAMA_CPP_URL", "http://localhost:9931")
     monkeypatch.setattr(llm.httpx, "post", post)
 
     assert llm.generate("hi") == "hello"
-    assert sent[0][0] == "http://localhost:8080/completion"
+    assert sent[0][0] == "http://localhost:9931/completion"
     assert sent[0][1]["prompt"] == "hi"
     assert sent[0][1]["model"] == "test-model"
 

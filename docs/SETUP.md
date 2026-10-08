@@ -49,7 +49,7 @@ containing:
 
 ```env
 MODEL_PROVIDER=llama_cpp
-LLAMA_CPP_URL=http://localhost:8080
+LLAMA_CPP_URL=http://localhost:9931
 MODEL=your-model-name
 ```
 
