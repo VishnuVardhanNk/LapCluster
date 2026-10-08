@@ -1,163 +1,98 @@
 # LapClusters demo video script
 
-Target length: about 3 minutes 30 seconds. Recorded on one laptop.
+Read the plain text aloud. The lines in brackets are what to do on screen while
+you say it. About three minutes.
 
-Each scene lists what to do on screen and what to say. The words are written to
-be spoken, so read them aloud once before recording and change anything that
-does not sound like you.
-
-## Before you record
-
-1. Start everything:
-   - `docker start redis`
-   - open Ollama
-   - `.venv\Scripts\python.exe -m lapclusters`
-2. Warm the model so the first answer is not slow: on the Work tab choose
-   **Prompt**, ask "Say hello", and wait for the answer.
-3. Open **History** and click **Clear history**, so the screen starts clean.
-4. Click **Leave** so the recording starts on the landing page. Your password
-   stays filled in.
-5. Set the browser zoom to 110% or 125% so text is readable in the video, and
-   close other tabs.
-6. Have a file explorer window open on the `examples` folder, ready to drag
-   `invoice.png`.
-7. Record the browser window only, at 1080p.
-
-If a teammate's laptop is available and updated, have them join during scene 3.
-It makes scenes 3 and 7 stronger. The script works without it.
+Before recording: start the app, ask one "Say hello" prompt so the model is
+warm, clear the history, and click Leave so you begin on the landing page.
 
 ---
 
-## Scene 1 — The problem (0:00 to 0:25)
+**[Show the landing page.]**
 
-**On screen:** the landing page. Let the diagram animate. Do not click.
+Hi, we are team [team name], and this is LapClusters.
 
-**Say:**
-"Small teams want to use AI on their own code and documents. But cloud AI costs
-money for every question, and it means sending private files to someone else's
-servers. Running a model on your own laptop fixes both problems, but one laptop
-is slow. This is LapClusters. It pools the laptops your team already owns into
-one private AI cluster."
+Small teams want to use AI on their own code and documents. But cloud AI costs
+money for every question, and you have to send your private files to someone
+else's servers. You can run a model on your own laptop instead, but one laptop
+is slow.
 
-## Scene 2 — What it is (0:25 to 0:45)
+LapClusters fixes that. It joins the laptops your team already has into one
+private AI cluster.
 
-**On screen:** move the mouse over the three points on the left, then the diagram.
+**[Point at the diagram.]**
 
-**Say:**
-"Every laptop runs its own copy of Gemma 4, an open model from Google, through
-Ollama. A shared queue splits a job into small tasks, hands them to whichever
-laptop is free, and pieces the answers back together. Nothing leaves the room,
-and there is no bill per question."
+Every laptop runs its own copy of Gemma 4 using Ollama. A shared queue splits a
+big job into small tasks, gives each task to whichever laptop is free, and then
+puts the answers together. Nothing leaves the room, and there is no bill.
 
-## Scene 3 — Starting a cluster (0:45 to 1:05)
+**[Point at the three steps, then click "Host a cluster on this laptop".]**
 
-**On screen:** point at step 1 (Ollama running, model shown), step 2 (the
-password), then click **Host a cluster on this laptop**. The cluster screen opens.
-Point at the laptop card on the left.
+Starting is simple. The app checks that my laptop can run the model. I enter the
+cluster password. Then I click Host. My teammates open the same app, and they
+see my cluster in a list and click Join. Nobody has to type an IP address.
 
-**Say:**
-"Getting started takes three steps. The app checks that this laptop can run the
-model, I enter the cluster password, and I choose to host. Teammates open the
-same app on their laptops and pick this cluster from a list. Nobody types an IP
-address; the laptops find each other on the network. Each laptop shows up here
-with its model and what it is doing."
+**[Point at the laptop card on the left.]**
 
-*If a teammate joins now, add:* "There, a second laptop has just joined."
+Every laptop in the cluster shows up here, with the model it is running and what
+it is working on right now.
 
-## Scene 4 — Asking a question across files (1:05 to 1:55)
+**[Click "Ask about files". Type `examples/sales-pack` in the folder box. Type
+the question: "How many units were sold in the month of the spring campaign, and
+what was the revenue that month?" Click Ask.]**
 
-**On screen:**
-1. Click **Ask about files**.
-2. In the folder box type `examples/sales-pack`.
-3. In the question box type: `How many units were sold in the month of the
-   spring campaign, and what was the revenue that month?`
-4. Click **Ask**. Watch the tasks appear and finish.
+Now let me show it working. This folder has a report, a chart saved as a
+picture, a PDF and a photo. I am asking one question about all of them.
 
-**Say while it runs:**
-"This folder has a short report, a chart saved as a picture, a PDF memo and a
-photo. I am asking one question of all of them. Each file becomes a task. The
-report says the campaign ran in the month with the tallest bar, and that each
-unit cost forty rupees. The actual numbers are only in the chart. So the report
-and its picture are sent to the model together."
+**[Watch the tasks run.]**
 
-**When the answer appears, say:**
-"Three hundred and ten units in March, and twelve thousand four hundred rupees.
-It read the number from the picture, the price from the text, and combined them."
+Each file becomes one task. The report only says the campaign was in the month
+with the tallest bar, and that each unit cost forty rupees. The real numbers are
+only inside the chart picture. So LapClusters sends the report and its picture
+to the model together.
 
-## Scene 5 — Seeing how the answer was produced (1:55 to 2:20)
+**[The answer appears.]**
 
-**On screen:** click the `report.md` row. In the side panel click **Prompt**,
-then **Timeline**, then **Answer**. Close the panel.
+And here is the answer. Three hundred and ten units in March, and twelve
+thousand four hundred rupees. It read the number from the picture and the price
+from the text.
 
-**Say:**
-"Nothing here is a black box. For every task I can open the exact prompt that
-was sent, the model's raw reply, and a timeline of which laptop took it and how
-long it ran. While a task is running, the reply streams in live."
+**[Click the `report.md` row. Click Prompt, then Timeline, then close the panel.]**
 
-## Scene 6 — Attaching a picture (2:20 to 2:40)
+Everything is transparent. For any task I can see the exact prompt we sent, the
+model's reply, and a timeline showing which laptop did it and how long it took.
 
-**On screen:** drag `invoice.png` from the file explorer onto the form. In the
-question box type `Who is the customer and what is the total due?` and press Enter.
+**[Drag `examples/invoice.png` onto the form. Type "Who is the customer and
+what is the total due?" Press Enter.]**
 
-**Say:**
-"I can also just drop a file in, or paste a screenshot. Here is an invoice as a
-picture."
+I can also just drag a file in. This is a picture of an invoice.
 
-**When the answer appears:** "Kovai Traders, twelve thousand eight hundred rupees."
+**[The answer appears.]**
 
-## Scene 7 — Code review and writing code (2:40 to 3:05)
+It reads the picture and tells me the customer is Kovai Traders and the total is
+twelve thousand eight hundred rupees.
 
-**On screen:**
-1. Click **Review code**, type `tests/fixtures/sample_repo`, click **Start review**.
-2. While it runs, click the **Results** tab when the first findings appear.
-3. Optionally: click **Write code**, type `A Python function that checks whether
-   a string is a palindrome`, press Enter, and show the answer.
+**[Click "Review code". Type `tests/fixtures/sample_repo`. Click Start review.
+When it finishes, click the Results tab.]**
 
-**Say:**
-"The same cluster reviews code. This small repository has bugs planted in it,
-and each file is reviewed separately. It finds the SQL injection, the division by
-zero and the missing await, ranked by severity. Long files are split into parts
-so nothing is skipped. It can also answer a single prompt or write code."
+It also reviews code. This small project has bugs we planted on purpose. Each
+file is checked separately, and the problems are listed by how serious they are.
+Long files are split into parts, so nothing is skipped.
 
-## Scene 8 — What happens when a laptop fails (3:05 to 3:25)
+**[Click the Activity tab, then the History tab.]**
 
-**On screen:** point at the laptop card. Then open the **Activity** tab and the
-**History** tab.
+Laptops can fail, so we planned for that. If a laptop drops out in the middle of
+a task, another laptop takes over its work. If a laptop cannot run its model, it
+gives the task back instead of failing it, and its card tells you exactly what
+is wrong. And every job is saved here in History.
 
-**Say:**
-"Laptops are unreliable, so the cluster expects that. If a laptop drops out
-mid-task, another one takes its work over. If a laptop cannot run its model, it
-hands the task back instead of failing it, and its card says exactly what is
-wrong. Every job is kept in history with its time and the laptops that took part."
+**[Go back to the Work tab.]**
 
-*If you ran the two-laptop test, add:* "In our test on an eight-file review, one
-laptop took about a hundred and thirty-five seconds and two laptops took
-eighty-nine."
+LapClusters is open source. It is built with Gemma 4, Ollama, Redis and Python.
+It turns the laptops you already own into a private AI cluster.
 
-## Scene 9 — Close (3:25 to 3:40)
-
-**On screen:** back to the **Work** tab, or the landing page.
-
-**Say:**
-"LapClusters is open source, built with Gemma 4, Ollama, Redis and Python. It
-turns the laptops you already own into a private AI cluster. Thank you."
+Thank you.
 
 ---
 
-## Things to get right
-
-- **Only say what the video shows or what was measured.** The two-laptop timing
-  in scene 8 came from one test of a small job on an earlier version, so say "in
-  our test", not "it is one and a half times faster".
-- **Do not say it works with any model or any file.** Scanned PDFs are skipped,
-  and pictures need a model that can see.
-- **If an answer comes out wrong on a take, record again.** The model does not
-  give the same answer every time. Do not cut in an answer from another run.
-- **The first request after starting is slow** while Ollama loads the model,
-  which is why step 2 of the preparation warms it up.
-
-## After recording
-
-1. Upload to YouTube as Public or Unlisted.
-2. Put the link in `README.md` under "Demo Video".
-3. Tick "Demo video added" in the README checklist.
+After uploading to YouTube, put the link in `README.md` under "Demo Video".
