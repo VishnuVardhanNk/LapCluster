@@ -2,7 +2,7 @@
 
 > Turn the laptops your team already owns into a private AI cluster that reviews a whole code repository in parallel, with no cloud bill and no code leaving the room.
 
-**Status:** checkpoint 1 of 5 is built. One worker answers prompts sent through the shared queue. Repository review, multi-laptop operation and the dashboard are planned and are marked as such below.
+**Status:** the backend is built (checkpoints 1 to 3 of 5). A repository can be reviewed end to end, several workers share the work, and a worker that dies mid-job has its task taken over. So far this has been run with multiple workers on one laptop; a run across separate laptops, the dashboard and the benchmark are still to come and are marked as planned below.
 
 ## Team
 
@@ -39,12 +39,14 @@ Built:
 - A worker that answers queued prompts with Gemma 4 running locally through Ollama.
 - Per-task status tracking (`pending`, `running`, `done`, `failed`) with the result or error stored alongside.
 - A worker that survives bad tasks, model errors and a dropped Redis connection.
-- A command-line tool that submits a prompt and waits for the answer.
+- Whole-repository code review from a local folder or a git URL: one task per source file, merged into one Markdown report sorted by severity.
+- Structured model output: Gemma 4 is constrained to a JSON schema, with one retry if a reply is still unusable.
+- Worker heartbeats, and automatic takeover of a task whose worker has died. A task abandoned three times is marked failed so a job always finishes.
+- A command-line tool that submits a single prompt and waits for the answer.
 
 Planned:
 
-- Whole-repository code review: one task per file, merged into one report.
-- Workers on several laptops, with stalled tasks reassigned when a laptop drops out.
+- A verified run across separate laptops on one network.
 - A live dashboard showing connected laptops and task progress.
 - A benchmark comparing one laptop against the full cluster.
 
@@ -60,19 +62,20 @@ Work is split by a fixed rule (one task per file) and not by asking the model to
 
 ```mermaid
 flowchart LR
-    CLI[Command-line tool] -->|add task| R[(Redis<br/>stream + task records)]
-    R -->|one task per worker| W1[Worker on laptop 1]
-    W1 -->|prompt| O1[Ollama + Gemma 4]
-    O1 -->|answer| W1
-    W1 -->|result and status| R
-    R -->|poll status| CLI
-
-    ORC[Orchestrator<br/>planned] -.->|one task per file| R
-    R -.-> W2[Workers on other laptops<br/>planned]
+    SRC[Local folder or git URL] --> ORC[Orchestrator<br/>host laptop]
+    ORC -->|one task per file| R[(Redis<br/>stream + task records)]
+    R -->|each task to one worker| W1[Worker on laptop 1]
+    R -->|each task to one worker| W2[Worker on laptop 2..N]
+    W1 <-->|prompt / JSON findings| O1[Ollama + Gemma 4]
+    W2 <-->|prompt / JSON findings| O2[Ollama + Gemma 4]
+    W1 -->|result, status, heartbeat| R
+    W2 -->|result, status, heartbeat| R
+    R -->|poll task status| ORC
+    ORC --> REP[review-report.md]
     R -.-> D[Dashboard<br/>planned]
 ```
 
-Solid lines are built. Dotted lines are planned.
+Solid lines are built. The dotted line is planned.
 
 ### Technology Stack
 
@@ -83,7 +86,7 @@ Solid lines are built. Dotted lines are planned.
 | Backend         | Python 3.11+, redis-py, httpx, python-dotenv             |
 | Database        | Redis 7 (Streams, consumer groups, hashes, sets)         |
 | AI / ML         | Gemma 4 E4B (`gemma4:e4b`) served locally by Ollama      |
-| Infrastructure  | Docker (runs Redis), pytest                              |
+| Infrastructure  | Docker (runs Redis), Git (clones repositories), pytest   |
 | APIs / Services | Ollama local HTTP API. No cloud services                 |
 
 
@@ -92,9 +95,12 @@ If a category or technology is not implemented in the project, specify `N/A` ins
 ### How It Works
 
 - `lapclusters/taskqueue.py` is the only module that talks to Redis. Adding a task writes a status record (`task:{id}`), registers the task under its job (`job:{id}`) and appends it to the `tasks` stream, all in one transaction.
-- `lapclusters/worker.py` runs a loop: claim one task through the `workers` consumer group, send its prompt to the model, store the result, acknowledge the task.
+- `lapclusters/repo.py` turns a folder or git URL into a list of source files. A URL is cloned into a temporary folder on the host laptop, which is deleted once the files are read. Dependency folders, non-source files and files over 20 KB are left out.
+- `lapclusters/orchestrator.py` queues one review task per file, with the file's content inside the task, waits for all of them, and writes the report.
+- `lapclusters/review.py` builds the review prompt (with numbered lines) and cleans up the model's JSON reply.
+- `lapclusters/worker.py` runs a loop: claim one task through the `workers` consumer group, run it on the model, store the result, acknowledge the task. A background thread refreshes the worker's heartbeat every 5 seconds.
 - `lapclusters/llm.py` makes the HTTP call to Ollama on the same laptop.
-- `lapclusters/cli.py` adds one task and polls its status record until it is `done` or `failed`.
+- `lapclusters/cli.py` adds one plain-prompt task and polls its status record until it is `done` or `failed`.
 - `lapclusters/config.py` reads the Redis address, Ollama address, model name and worker name from environment variables or a `.env` file.
 
 ### Technical Decisions
@@ -103,6 +109,8 @@ If a category or technology is not implemented in the project, specify `N/A` ins
 - **Workers pull work when free.** Nothing assigns tasks up front, so a faster laptop naturally takes more.
 - **Task content travels through Redis.** Workers need only a Redis connection, not a copy of the repository or internet access.
 - **Failures are recorded, not raised.** A model error or malformed task marks that task `failed` and the worker carries on.
+- **Takeover is based on heartbeats, not elapsed time.** A task is only taken from a worker whose heartbeat has expired, so a slow laptop that is still working is never interrupted.
+- **The model's output is constrained to a JSON schema** through Ollama's structured output, because free-text replies from a small model are not reliably parseable.
 - **The Redis read timeout (60 s) is set above the worker's wait (5 s).** The client library's default timeout equals the wait, which made an idle worker crash.
 - **Model context raised to 8192 tokens**, because Ollama's 4096 default is too small for source files.
 
@@ -194,13 +202,30 @@ python -m lapclusters.worker
 
 ### Usage
 
-In a second terminal, send a prompt to the cluster:
+In a second terminal, review a repository. The source can be a local folder or a git URL:
+
+```bash
+python -m lapclusters.orchestrator tests/fixtures/sample_repo
+```
+
+Progress is printed as files finish, and the report is written to `review-report.md` (change it with `--output`). The bundled sample repository contains deliberate bugs to try it on. The first request is slower because Ollama has to load the model.
+
+To send a single prompt instead:
 
 ```bash
 python -m lapclusters.cli "Explain what a task queue is in one sentence."
 ```
 
-The answer is printed once a worker has processed it. The first request is slower because Ollama has to load the model.
+### Adding More Laptops
+
+One laptop is the host: it runs Redis and the orchestrator. Every laptop, including the host, runs a worker and its own Ollama.
+
+1. On the host, start Redis with a password and allow inbound TCP port 6379 through its firewall.
+2. On every other laptop, install the project and pull the model, then set `REDIS_URL` in `.env` to the host's address: `redis://:PASSWORD@HOST_IP:6379/0`.
+3. Start `python -m lapclusters.worker` on each laptop.
+4. Run the orchestrator on the host. It prints how many workers are live.
+
+Only the host needs the repository and internet access. Step-by-step commands are in [docs/SETUP.md](docs/SETUP.md).
 
 Run the tests (Redis must be running):
 
@@ -212,8 +237,11 @@ To watch tasks move through Redis, and for what each teammate builds next, see [
 
 ### Known Limitations
 
-- A task claimed by a worker that then dies is not reassigned yet.
-- Only single prompts are supported; repository review is not built yet.
+- Not yet run across separate laptops; multi-worker operation has been checked with several workers on one laptop.
+- Source files over 20 KB are listed as not reviewed, because they do not fit in the model's context.
+- Each file is reviewed in isolation, so problems that span several files are not found.
+- The model sometimes reports problems that are not real. Treat the report as leads to check.
+- A dead worker's task is taken over by the next worker that becomes free, so the handover can take as long as that worker's current file.
 
 ## Devpost Submission
 

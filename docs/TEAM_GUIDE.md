@@ -63,6 +63,9 @@ Ollama's default of 4096 is too small for source files.
 - `main()` — connects to Redis and starts the loop. Stop it with Ctrl+C.
   Run with `python -m lapclusters.worker`.
 
+### `lapclusters/repo.py`, `review.py`, `orchestrator.py`
+Repository review. See section 6.
+
 ### `lapclusters/cli.py`
 - `submit_and_wait(queue, prompt, timeout_s)` — adds one task and polls its
   status until it is `done` or `failed`. Raises `TimeoutError` if no worker
@@ -72,7 +75,7 @@ Ollama's default of 4096 is too small for source files.
 ### `tests/`
 `conftest.py` provides a `queue` fixture connected to Redis database 15, which it
 empties before and after each test. Real work uses database 0, so tests never
-touch real tasks. There are 21 tests across the three test files.
+touch real tasks. There are 65 tests.
 
 ## 3. How to test that it works
 
@@ -94,7 +97,7 @@ Run the automated tests:
 python -m pytest -v
 ```
 
-Expected: `21 passed` in about 11 seconds. If every test fails with
+Expected: `65 passed` in about 15 seconds. If every test fails with
 `ConnectionError`, Redis is not running.
 
 Run it for real, with two terminals. Terminal 1:
@@ -106,10 +109,11 @@ python -m lapclusters.worker
 Terminal 2:
 
 ```bash
-python -m lapclusters.cli "Explain what a task queue is in one sentence."
+python -m lapclusters.orchestrator tests/fixtures/sample_repo
 ```
 
-Expected: an answer in terminal 2 and `Handled one task` in terminal 1. The first
+Expected: progress lines up to `3/3 files reviewed`, then a `review-report.md`
+listing the bugs planted in the sample files. The first
 request takes longer because Ollama has to load the model.
 
 ## 4. How to look inside Redis
@@ -154,82 +158,98 @@ An "agent" here is a worker process on a laptop, with its own copy of Gemma 4.
 - **Collecting.** The orchestrator watches the task hashes and merges the
   results when all are `done` or `failed`.
 
-Today only one worker has been run. Running more is a matter of starting the
-same command on more laptops with `REDIS_URL` pointing at the host.
+Running more workers is a matter of starting the same command on more laptops
+with `REDIS_URL` pointing at the host. See section 7.
 
-## 6. How a repository gets reviewed (checkpoint 2 design)
+## 6. How a repository gets reviewed
+
+Run on the host laptop:
+
+```bash
+python -m lapclusters.orchestrator <folder-or-git-url>
+```
 
 **Where the repository lives.** Only the host laptop needs the repository and
-internet access. The orchestrator accepts either a local folder or a GitHub URL;
-for a URL it runs `git clone --depth 1` into a temporary folder.
+internet access. A local folder is used as it is. A git URL is cloned with
+`git clone --depth 1` into a temporary folder (under the system temp directory,
+named `lapclusters-...`), which is deleted as soon as the files have been read.
 
-**How it reaches other laptops.** The orchestrator reads each file and puts the
-file's path and content inside the task payload. The content travels through
-Redis. Other laptops need only a connection to Redis: no clone, no internet.
+**How it reaches other laptops.** `orchestrator.py` puts each file's path and
+content inside its task. The content travels through Redis. Other laptops need
+only a connection to Redis: no clone, no internet.
 
-**How the work is split.** One task per source file. This is a fixed rule, not
-something the model decides, because small models split work unreliably.
+**How the work is split** (`repo.py`). One task per source file. This is a fixed
+rule, not something the model decides.
 
-- Skip folders: `.git`, `node_modules`, `.venv`, `venv`, `__pycache__`, `dist`, `build`.
-- Keep only text source files (for example `.py`, `.js`, `.ts`, `.java`, `.go`,
-  `.c`, `.cpp`, `.rs`, `.md`).
-- Skip files larger than 20 KB so the file plus the prompt fits in the model's
-  8192-token context. Skipped files are listed in the report as "not reviewed".
-- Possible later improvement: split large files into overlapping blocks of lines
-  instead of skipping them.
+- Skipped folders include `.git`, `node_modules`, `.venv`, `__pycache__`, `dist`, `build`.
+- Only source files are kept (`.py`, `.js`, `.ts`, `.java`, `.go`, `.c`, `.cpp`,
+  `.rs` and similar). Empty files are ignored.
+- Files over 20 KB, files that are not UTF-8 text, and files that cannot be
+  opened are listed in the report under "Not reviewed".
 
-**What each worker is asked.** A review prompt containing the file path and
-content, asking for JSON: a list of findings, each with `line`, `severity`
-(`high`, `medium` or `low`) and `message`.
+**What each worker is asked** (`review.py`). The file with numbered lines and an
+instruction to report only real defects as JSON: `line`, `severity` (`high`,
+`medium`, `low`) and `message`. Ollama is given a JSON schema so Gemma 4's reply
+is constrained to that shape. If the reply is still unusable the worker asks
+once more, then marks the task `failed`.
 
-**How results are merged.** The orchestrator gathers all findings and writes one
-Markdown report sorted by severity, then by file.
+**How results are merged** (`orchestrator.py`). All findings go into one
+Markdown report sorted by severity, then file, then line, with a count of files
+reviewed by each worker.
 
-## 7. What to build next
+## 7. Workers joining and leaving
 
-Every checkpoint is one branch and one pull request into `main`. Each person
-commits to the checkpoint's branch at least once an hour, under their own name.
+- Every worker refreshes a heartbeat key `worker:{name}` every 5 seconds; the key
+  expires after 15 seconds. `TaskQueue.workers()` lists the live ones.
+- When a worker asks for work, it first checks for tasks held by a worker whose
+  heartbeat has expired, and takes one over if it has been untouched for 10
+  seconds. A slow worker that is still alive is never interrupted.
+- A worker that restarts picks up the task it was holding when it stopped.
+- A task abandoned by three workers in a row is marked `failed`, so a job always ends.
 
-### Checkpoint 2 — split and merge (branch `checkpoint-2`)
+Checked so far with two workers on one laptop, killing one mid-job. Not yet run
+across separate laptops.
 
-| Person | File | Builds |
-|--------|------|--------|
-| A | `lapclusters/repo.py` | `collect_files(root) -> list[tuple[str, str]]` returning (relative path, content) using the skip rules above; `fetch_repo(source) -> str` that returns a local path, cloning when given a URL |
-| B | `lapclusters/review.py` | `build_prompt(path, content) -> str`; `parse_findings(text) -> list[dict]` that extracts the JSON and raises `ValueError` when it is invalid |
-| C | `lapclusters/orchestrator.py` | `start_job(queue, files) -> str` adding one task per file; `wait_for_job(queue, job_id)`; `build_report(results) -> str`; command `python -m lapclusters.orchestrator <path-or-url>` |
-| D | `tests/fixtures/sample_repo/`, tests, README | A tiny repository with known bugs to review; tests for A, B and C; README "How It Works" |
+### Connecting another laptop
 
-The queue already remembers which tasks belong to a job: use
-`TaskQueue.job_tasks(job_id)` to list them and `TaskQueue.get(task_id)` to read
-each one's status and result.
+1. Host: start Redis with a password (see `docs/SETUP.md`) and open port 6379 in
+   the firewall.
+2. Other laptop: clone the repository, install the requirements, pull the model.
+3. Other laptop: create `.env` containing
+   `REDIS_URL=redis://:PASSWORD@HOST_IP:6379/0`.
+4. Other laptop: `python -m lapclusters.worker`.
+5. Host: run the orchestrator. It prints the number of live workers, and the
+   report's "Reviewed by" section shows how many files each laptop handled.
 
-The worker must retry once when `parse_findings` raises, then mark the task `failed`.
+## What is left to build
 
-### Checkpoint 3 — multi-laptop cluster (branch `checkpoint-3`)
+Commit straight to `main`. Run `git pull --rebase origin main` before every push.
 
-- Worker heartbeat: key `worker:{name}` with a 15-second expiry, refreshed every 5 seconds.
-- Reclaim stalled tasks: any worker takes over tasks idle for more than 120
-  seconds using Redis `XAUTOCLAIM`.
-- A task that fails three times is marked `failed` for good.
-- Start Redis with a password, open port 6379 on the host's firewall, and put
-  the host's address in every other laptop's `.env` as `REDIS_URL`.
-- Demo: kill a worker mid-job and the review still completes.
-
-### Checkpoint 4 — live dashboard (branch `checkpoint-4`)
+### Checkpoint 4: live dashboard
 
 - Add `fastapi` and `uvicorn` to `requirements.txt`.
-- `lapclusters/dashboard/app.py`: endpoints `/api/workers`, `/api/jobs/{job_id}`.
-- One HTML page that polls those endpoints every second and shows online
-  laptops, each task's status, and tasks finished per minute.
+- `lapclusters/dashboard/app.py` with endpoints:
+  - `/api/workers` from `TaskQueue.workers()`
+  - `/api/jobs/{job_id}` from `TaskQueue.job_tasks()` and `TaskQueue.get_many()`
+- One HTML page that polls those endpoints every second and shows live laptops,
+  each file's status and which laptop has it, and files finished per minute.
+- The orchestrator should print the job id so the dashboard can be pointed at it.
 
-### Checkpoint 5 — benchmark and polish (branch `checkpoint-5`)
+### Checkpoint 5: benchmark and polish
 
 - `scripts/benchmark.py`: run the same review with one worker, then with all
-  workers, and print both times.
-- Finish every README section, add the architecture diagram, record the demo video.
+  workers, and print both times. The orchestrator already prints elapsed seconds.
+- Run it for real across the team's laptops and record the numbers.
+- Finish every README section, add the `LICENSE` file, record the demo video.
 - Fill in the Devpost link and tick the submission checklist.
 
-## 8. Rules to remember
+### Ideas if there is time
+
+- Split files over 20 KB into overlapping blocks of lines instead of skipping them.
+- A second pass that asks the model to double-check each `high` finding, to cut
+  false positives.
+
+## Rules to remember
 
 - Never commit `.env` or a Redis password.
 - Do not put results, timings or features in the README until they exist.

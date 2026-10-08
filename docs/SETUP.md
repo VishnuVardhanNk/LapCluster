@@ -124,7 +124,34 @@ nc -vz HOST_IP 6379
 
 If this fails, switch everyone to a phone hotspot or to Tailscale and retry.
 
-## Python packages
+## Joining the cluster (every laptop except the host)
 
-These are installed from the repository's requirements file once checkpoint 1 is
-merged: `redis`, `httpx`, `fastapi`, `uvicorn`, `pytest`.
+Get the code and install its packages:
+
+```bash
+git clone https://github.com/VishnuVardhanNk/LapCluster.git
+```
+
+```bash
+cd LapCluster
+```
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+Create a file named `.env` in the project folder with one line, using the host's
+IP address and the Redis password the host shared:
+
+```env
+REDIS_URL=redis://:PASSWORD@HOST_IP:6379/0
+```
+
+Start your worker and leave it running:
+
+```bash
+python -m lapclusters.worker
+```
+
+It should print `Worker <your-computer-name> ready, model gemma4:e4b`. If it
+prints `Cannot reach Redis`, run the connectivity test above.
