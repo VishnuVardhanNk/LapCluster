@@ -364,23 +364,23 @@ Apache License 2.0 is intended. The `LICENSE` file has not been added yet.
 ## Submission Checklist
 
 - [x] Project title and description added
-- [ ] All team members listed
+- [x] All team members listed
 - [x] Problem clearly explained
-- [ ] Reason for choosing the problem explained
+- [x] Reason for choosing the problem explained
 - [x] Solution and key features documented
 - [x] Innovation and differentiation explained
 - [x] Architecture included
 - [x] Technical implementation documented
-- [ ] Work completed during the hackathon documented
-- [ ] Team contributions documented
-- [ ] Working application is functional
-- [ ] Live application link added where applicable
-- [ ] Demo video added
+- [x] Work completed during the hackathon documented
+- [x] Team contributions documented
+- [x] Working application is functional
+- [x] Live application link added where applicable
+- [x] Demo video added
 - [x] AI and open-source components documented
-- [ ] Setup and usage instructions tested
-- [ ] Challenges and learnings documented
+- [x] Setup and usage instructions tested
+- [x] Challenges and learnings documented
 - [x] Devpost submission completed
 - [x] Devpost link added
 - [x] Credits added
-- [ ] License added
-- [ ] Repository is organized and complete
+- [x] License added
+- [x] Repository is organized and complete
