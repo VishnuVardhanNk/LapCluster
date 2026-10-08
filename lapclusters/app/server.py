@@ -6,8 +6,12 @@ state through Redis, and each runs its own copy of this server.
 
 from __future__ import annotations
 
+import re
+import shutil
+import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
@@ -60,6 +64,33 @@ class ReviewBody(BaseModel):
     source: str = ""
     kind: str = "review"
     question: str = ""
+    # Id of a set of files attached in the browser, used in place of `source`.
+    upload: str = ""
+
+
+# Files attached in the browser wait here until their job has read them.
+UPLOADS = Path(tempfile.gettempdir()) / "lapclusters-uploads"
+MAX_UPLOAD_BYTES = 30_000_000
+MAX_UPLOAD_FILES = 40
+_UPLOAD_ID = re.compile(r"^[0-9a-f]{32}$")
+
+
+def _upload_folder(upload_id: str) -> Path | None:
+    """The folder for an upload id, or None if the id is not one of ours.
+    Checking the shape of the id is what keeps a request inside UPLOADS."""
+    if not _UPLOAD_ID.match(upload_id):
+        return None
+    folder = UPLOADS / upload_id
+    return folder if folder.is_dir() else None
+
+
+def _clear_old_uploads(max_age_s: float = 86_400) -> None:
+    try:
+        for folder in UPLOADS.iterdir():
+            if time.time() - folder.stat().st_mtime > max_age_s:
+                shutil.rmtree(folder, ignore_errors=True)
+    except OSError:
+        pass
 
 
 def _problem(message: str, status: int = 400) -> JSONResponse:
@@ -74,6 +105,7 @@ def create_app(node: Node | None = None) -> FastAPI:
     # screen never briefly claims it is not running.
     node.runtime.refresh_models()
     last_model_check = {"at": time.monotonic()}
+    _clear_old_uploads()
 
     @app.middleware("http")
     async def local_only(request: Request, call_next):
@@ -223,6 +255,38 @@ def create_app(node: Node | None = None) -> FastAPI:
         # The other laptop applies it at its next heartbeat, a few seconds away.
         return {"ok": True, "applied": False}
 
+    # --- attached files --------------------------------------------------
+
+    @app.post("/api/uploads")
+    def new_upload():
+        if node.role != HOST:
+            return _problem("Only the host can attach files.", 403)
+        upload_id = uuid.uuid4().hex
+        (UPLOADS / upload_id).mkdir(parents=True, exist_ok=True)
+        return {"id": upload_id}
+
+    @app.put("/api/uploads/{upload_id}/{name}")
+    async def add_upload(upload_id: str, name: str, request: Request):
+        if node.role != HOST:
+            return _problem("Only the host can attach files.", 403)
+        folder = _upload_folder(upload_id)
+        if folder is None:
+            return _problem("No such set of attached files.", 404)
+        # Keep only the last part of the name, so it cannot point elsewhere.
+        safe = Path(name.replace("\\", "/")).name.strip()
+        if not safe or safe in (".", ".."):
+            return _problem("That file name cannot be used.")
+        if len(list(folder.iterdir())) >= MAX_UPLOAD_FILES and not (folder / safe).exists():
+            return _problem(f"At most {MAX_UPLOAD_FILES} files can be attached at once.")
+        limit = f"{safe} is larger than {MAX_UPLOAD_BYTES // 1_000_000} MB."
+        if int(request.headers.get("content-length") or 0) > MAX_UPLOAD_BYTES:
+            return _problem(limit, 413)
+        data = await request.body()
+        if len(data) > MAX_UPLOAD_BYTES:
+            return _problem(limit, 413)
+        (folder / safe).write_bytes(data)
+        return {"ok": True, "name": safe, "bytes": len(data)}
+
     # --- reviews ---------------------------------------------------------
 
     @app.post("/api/reviews")
@@ -233,14 +297,26 @@ def create_app(node: Node | None = None) -> FastAPI:
             return _problem("Unknown kind of job.")
         source = body.source.strip().strip('"') if body.kind in NEEDS_SOURCE else ""
         question = body.question.strip() if body.kind in NEEDS_QUESTION else ""
+        attached: Path | None = None
+        label = source
+        if body.upload:
+            if body.kind != "ask":
+                return _problem("Attached files can only be used with Ask about files.")
+            attached = _upload_folder(body.upload)
+            names = sorted(p.name for p in attached.iterdir()) if attached else []
+            if not names:
+                return _problem("The attached files were not received. Attach them again.")
+            source = str(attached)
+            shown = ", ".join(names[:4]) + (f" and {len(names) - 4} more" if len(names) > 4 else "")
+            label = f"Attached: {shown}"
         if body.kind in NEEDS_SOURCE and not source:
-            return _problem("Enter a folder or a git URL.")
+            return _problem("Enter a folder or a git URL, or attach files.")
         if body.kind in ("prompt", "code") and not question:
             return _problem("Type what you want to ask.")
         if body.kind == "ask" and not question:
             question = DEFAULT_QUESTION
         queue = node.queue()
-        job_id = prepare_job(queue, source, started_by=node.name, kind=body.kind, question=question)
+        job_id = prepare_job(queue, label, started_by=node.name, kind=body.kind, question=question)
 
         def fill() -> None:
             try:
@@ -256,6 +332,11 @@ def create_app(node: Node | None = None) -> FastAPI:
                     error=f"{type(exc).__name__}: {exc}",
                     finished_at=f"{time.time():.3f}",
                 )
+            finally:
+                # The files are in Redis now (or the job failed); either way
+                # the copies on disk are no longer needed.
+                if attached is not None:
+                    shutil.rmtree(attached, ignore_errors=True)
 
         # Cloning can take a while, so it must not hold up the reply.
         threading.Thread(target=fill, daemon=True).start()

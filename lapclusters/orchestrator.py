@@ -210,6 +210,11 @@ def _advance(queue: TaskQueue, job_id: str, meta: dict[str, str]) -> None:
         rows = queue.get_fields(queue.job_tasks(job_id), ["status", "name", "result", "type"])
         if not rows or any(row.get("status") not in FINISHED for row in rows.values()):
             return
+        answered = [t for t, row in rows.items() if row.get("type") == "ask"]
+        if len(answered) == 1 and rows[answered[0]].get("status") == DONE:
+            # One file, one answer: there is nothing to combine it with.
+            queue.update_job(job_id, answer_task=answered[0])
+            return
         notes = sorted(
             (row.get("name", ""), row.get("result", ""))
             for row in rows.values()

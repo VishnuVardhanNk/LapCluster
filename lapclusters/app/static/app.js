@@ -13,6 +13,8 @@ const ui = {
   skew: 0,             // Redis clock minus this browser's clock, in seconds
   tab: "review",
   kind: "review",      // which kind of job the form is set to start
+  attached: [],        // files chosen, dropped or pasted, waiting to be sent
+  uploadNote: "",
   job: "",             // a past review chosen in History; "" follows the newest
   hosts: null,         // hosts found on the network; null until the first search
   password: null,
@@ -547,11 +549,20 @@ function drawReview() {
       class: "field", rows: "2", "aria-label": "Question or request",
       // Enter starts; Shift+Enter makes a new line.
       onkeydown: (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); startJob(); } },
+      // A screenshot or copied file can be pasted straight in.
+      onpaste: (e) => { if (e.clipboardData && e.clipboardData.files.length) { e.preventDefault(); attach(e.clipboardData.files); } },
+    });
+    const picker = h("input", {
+      type: "file", multiple: true, class: "hidden", "aria-hidden": "true", tabindex: "-1",
+      accept: "image/*,.pdf,.md,.txt,.csv,.json,.yaml,.yml,.html,.xml,.py,.js,.ts,.java,.go,.rs,.c,.cpp,.cs,.rb,.php,.sql,.sh",
+      onchange: (e) => { attach(e.target.files); e.target.value = ""; },
     });
     els.review = {
-      source, question,
+      source, question, picker,
       kinds: h("div", { class: "kinds", role: "group", "aria-label": "Kind of job" }),
       hint: h("p", { class: "muted" }),
+      attached: h("div"),
+      attachButton: h("button", { class: "btn", text: "Attach files", onclick: () => picker.click() }),
       start: h("button", { class: "btn primary", onclick: startJob }),
       form: h("div", { class: "newjob" }),
       problem: h("div"),
@@ -559,7 +570,17 @@ function drawReview() {
       answer: h("div"),
       files: h("div"),
     };
-    els.review.form.append(els.review.kinds, els.review.hint, source, question, h("div", { class: "row" }, els.review.start));
+    const form = els.review.form;
+    form.append(els.review.kinds, els.review.hint, source, els.review.attached, question, picker,
+      h("div", { class: "row" }, els.review.start, els.review.attachButton));
+    // Files can be dropped anywhere on the form.
+    form.addEventListener("dragover", (e) => { e.preventDefault(); form.classList.add("dropping"); });
+    form.addEventListener("dragleave", () => form.classList.remove("dropping"));
+    form.addEventListener("drop", (e) => {
+      e.preventDefault();
+      form.classList.remove("dropping");
+      if (e.dataTransfer && e.dataTransfer.files.length) attach(e.dataTransfer.files);
+    });
     els.pane.replaceChildren(els.review.form, els.review.problem, els.review.head, els.review.answer, els.review.files);
   }
   const r = els.review;
@@ -573,11 +594,26 @@ function drawReview() {
     class: "chip", "aria-pressed": String(k.id === ui.kind), text: k.label,
     onclick: () => { ui.kind = k.id; ui.reviewProblem = ""; render(); },
   })));
+  const attaching = kind.id === "ask" && ui.attached.length > 0;
   r.hint.textContent = kind.hint;
-  r.source.classList.toggle("hidden", !kind.source);
+  // With files attached, they are the source; the folder field steps aside.
+  r.source.classList.toggle("hidden", !kind.source || attaching);
+  r.attachButton.classList.toggle("hidden", kind.id !== "ask");
   r.question.classList.toggle("hidden", !kind.question);
   r.question.placeholder = kind.placeholder || "";
-  r.start.textContent = ui.startingReview ? "Starting…" : kind.button;
+  region(r.attached, [kind.id, ui.attached.map((f) => [f.name, f.size])], () => {
+    if (kind.id !== "ask") return null;
+    if (!ui.attached.length) return h("p", { class: "muted small", text: "Or attach files: use the button, drop them here, or paste a screenshot into the question box." });
+    return h("div", { class: "attached" },
+      ui.attached.map((file, index) => h("span", { class: "filechip" },
+        h("span", { class: "mono", text: file.name }),
+        h("span", { class: "muted", text: sizeText(file.size) }),
+        h("button", { class: "x", "aria-label": `Remove ${file.name}`, text: "×", onclick: () => { ui.attached.splice(index, 1); render(); } }),
+      )),
+      h("button", { class: "btn small quiet", text: "Remove all", onclick: () => { ui.attached = []; render(); } }),
+    );
+  });
+  r.start.textContent = ui.startingReview ? (ui.uploadNote || "Starting…") : kind.button;
   r.start.disabled = ui.startingReview || busy || !d.connected;
   r.start.title = busy ? "Wait for the running job, or cancel it" : "";
 
@@ -714,18 +750,64 @@ function fileRow(task) {
   );
 }
 
+const MAX_ATTACH_BYTES = 30_000_000;
+const MAX_ATTACH_FILES = 40;
+
+function sizeText(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function attach(fileList) {
+  const problems = [];
+  for (const file of fileList) {
+    // A pasted screenshot arrives with a generic name; make each one distinct.
+    const pasted = file.name === "image.png" && file.lastModified && Date.now() - file.lastModified < 5000;
+    const name = pasted ? `screenshot-${ui.attached.length + 1}.png` : file.name;
+    if (file.size > MAX_ATTACH_BYTES) { problems.push(`${name} is larger than 30 MB`); continue; }
+    if (ui.attached.length >= MAX_ATTACH_FILES) { problems.push(`only ${MAX_ATTACH_FILES} files can be attached at once`); break; }
+    if (ui.attached.some((f) => f.name === name)) continue;
+    ui.attached.push({ name, size: file.size, file });
+  }
+  if (ui.attached.length) ui.kind = "ask";  // attaching always means asking about those files
+  ui.reviewProblem = problems.length ? `Not attached: ${problems.join("; ")}.` : "";
+  render();
+}
+
+async function uploadAttached() {
+  const { id } = await api("/api/uploads", {});
+  for (const [index, item] of ui.attached.entries()) {
+    ui.uploadNote = `Sending ${index + 1} of ${ui.attached.length}…`;
+    render();
+    const reply = await fetch(`/api/uploads/${id}/${encodeURIComponent(item.name)}`, {
+      method: "PUT", headers: { "x-lapclusters": "1" }, body: item.file,
+    });
+    if (!reply.ok) {
+      let message = `${item.name} could not be sent (${reply.status}).`;
+      try { message = (await reply.json()).error || message; } catch { /* keep the default */ }
+      throw new Error(message);
+    }
+  }
+  return id;
+}
+
 async function startJob() {
   if (ui.startingReview || !els.review) return;
   const kind = KINDS.find((k) => k.id === ui.kind);
-  const source = kind.source ? els.review.source.value.trim() : "";
+  const attaching = kind.id === "ask" && ui.attached.length > 0;
+  const source = kind.source && !attaching ? els.review.source.value.trim() : "";
   const question = kind.question ? els.review.question.value.trim() : "";
-  if (kind.source && !source) { ui.reviewProblem = "Enter a folder or a git URL."; render(); return; }
+  if (kind.source && !source && !attaching) { ui.reviewProblem = kind.id === "ask" ? "Enter a folder or a git URL, or attach files." : "Enter a folder or a git URL."; render(); return; }
   if (kind.question && !kind.source && !question) { ui.reviewProblem = "Type what you want to ask."; render(); return; }
   ui.startingReview = true;
+  ui.uploadNote = "";
   ui.reviewProblem = "";
   render();
   try {
-    await api("/api/reviews", { kind: kind.id, source, question });
+    const upload = attaching ? await uploadAttached() : "";
+    await api("/api/reviews", { kind: kind.id, source, question, upload });
+    ui.attached = [];
     els.review.question.value = "";
     ui.job = "";
     ui.findings = null;

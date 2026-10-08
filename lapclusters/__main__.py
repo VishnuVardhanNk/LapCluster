@@ -41,8 +41,11 @@ def main() -> int:
     if not args.no_browser:
         threading.Timer(1.0, webbrowser.open, [url]).start()
     # Remembered next to the project, and listed in .gitignore: it holds the
-    # cluster password, as .env does.
-    node = Node(memory=Path(__file__).resolve().parent.parent / ".lapclusters.json")
+    # cluster password, as .env does. A second copy of the app on the same
+    # laptop runs on another port and must not overwrite the first one's
+    # memory, so each port keeps its own.
+    name = ".lapclusters.json" if port == FIRST_PORT else f".lapclusters-{port}.json"
+    node = Node(memory=Path(__file__).resolve().parent.parent / name)
     threading.Thread(target=node.restore, daemon=True).start()
     uvicorn.run(create_app(node), host="127.0.0.1", port=port, log_level="warning")
     return 0

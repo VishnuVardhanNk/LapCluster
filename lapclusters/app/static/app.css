@@ -183,6 +183,12 @@ details.manual .grid { display: grid; grid-template-columns: 1fr 100px auto; gap
 
 .newjob { display: grid; gap: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
 .newjob.hidden { display: none; }
+.newjob.dropping { border-color: var(--accent); background: var(--accent-soft); }
+.small { font-size: 13px; }
+.attached { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.filechip { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 6px; padding: 3px 4px 3px 9px; background: var(--sunken); font-size: 13px; }
+.filechip .x { border: 0; background: none; cursor: pointer; color: var(--muted); font-size: 16px; line-height: 1; padding: 2px 6px; border-radius: 4px; }
+.filechip .x:hover { color: var(--high); background: var(--surface); }
 .kinds { display: flex; gap: 6px; flex-wrap: wrap; }
 textarea.field { resize: vertical; min-height: 44px; font-family: var(--sans); line-height: 1.45; }
 .question { max-width: 90ch; overflow-wrap: anywhere; }

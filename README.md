@@ -235,6 +235,7 @@ The app runs that laptop's worker itself, so no second terminal is needed. From 
 
 - The **Laptops** column shows every laptop, the file it is on, and its model. Change your own laptop's model from its card; the host can change anyone's. A change applies from the laptop's next file.
 - On the host, the **Work** tab starts a job: choose Review code, Ask about files, Prompt or Write code, fill in the folder or git URL and the question as needed, and press Start. Each task is a row; click one to watch the model's reply as it is written, then see its result, the raw reply, the exact prompt and a timeline.
+- For **Ask about files** you can attach files instead of naming a folder: use the Attach files button, drop them onto the form, or paste a screenshot into the question box. A single attached file is answered directly, with no combining step.
 - **Results** shows a review's findings with filters, or a question's combined answer with what each file contributed. Both can be downloaded. **History** keeps each job's time and laptops for comparison. **Activity** records joins, departures, takeovers, hand-backs and model changes.
 
 The app listens on `127.0.0.1` only. Laptops never talk to each other's app; they share state through Redis.

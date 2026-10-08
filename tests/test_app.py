@@ -410,7 +410,7 @@ def test_job_requests_are_validated(make_app):
 
     assert problem(kind="prompt", question="  ") == "Type what you want to ask."
     assert problem(kind="code") == "Type what you want to ask."
-    assert problem(kind="ask", question="Q?") == "Enter a folder or a git URL."
+    assert problem(kind="ask", question="Q?") == "Enter a folder or a git URL, or attach files."
     assert problem(kind="nonsense", source="x") == "Unknown kind of job."
     # A question about files has a sensible default.
     job_id = start(client, kind="ask", source=SAMPLE_REPO)
@@ -523,3 +523,85 @@ def test_a_laptop_whose_model_is_missing_shows_why_and_takes_nothing(make_app, m
     client.post("/api/model", json={"worker": node.name, "model": "model-a"})
     job = finished_job(client)
     assert (job["done"], job["failed"]) == (3, 0)
+
+
+# --- attached files ----------------------------------------------------------
+
+
+def test_attached_files_become_the_source_of_a_question(make_app):
+    from lapclusters.app import server
+
+    client, node = make_app()
+    node.generate = kinds_model
+    host(client)
+    upload = client.post("/api/uploads").json()["id"]
+    sent = client.put(f"/api/uploads/{upload}/notes.md", content=b"March was the best month.\n")
+    assert sent.json() == {"ok": True, "name": "notes.md", "bytes": 26}
+    client.put(f"/api/uploads/{upload}/more.txt", content=b"April was quiet.\n")
+
+    start(client, kind="ask", upload=upload, question="Which month was best?")
+    job = finished_job(client)
+    assert (job["status"], job["answer"]) == ("done", "COMBINED")
+    assert job["source"] == "Attached: more.txt, notes.md"
+    assert sorted(t["name"] for t in job["tasks"]) == ["Combined answer", "more.txt", "notes.md"]
+    # The copies on disk are removed once the job has read them.
+    wait_for(lambda: not (server.UPLOADS / upload).exists())
+
+
+def test_a_single_attached_file_is_answered_without_a_combining_step(make_app):
+    client, node = make_app()
+    node.generate = kinds_model
+    host(client)
+    upload = client.post("/api/uploads").json()["id"]
+    client.put(f"/api/uploads/{upload}/notes.md", content=b"March was the best month.\n")
+    start(client, kind="ask", upload=upload, question="Which month was best?")
+    job = finished_job(client)
+    assert (job["status"], job["answer"], job["total"]) == ("done", "ANSWER", 1)
+    assert job["answer_task"] == job["tasks"][0]["id"]
+
+
+def test_attached_file_names_cannot_escape_their_folder(make_app):
+    from lapclusters.app import server
+
+    client, _ = make_app(run_worker=False)
+    host(client)
+    upload = client.post("/api/uploads").json()["id"]
+    reply = client.put(f"/api/uploads/{upload}/..%5C..%5Cevil.txt", content=b"x")
+    assert reply.json()["name"] == "evil.txt"
+    assert (server.UPLOADS / upload / "evil.txt").exists()
+    assert not (server.UPLOADS.parent / "evil.txt").exists()
+    # The client itself collapses "..", so this never reaches the upload at all.
+    assert client.put(f"/api/uploads/{upload}/..", content=b"x").status_code in (400, 404, 405)
+    assert sorted(p.name for p in (server.UPLOADS / upload).iterdir()) == ["evil.txt"]
+    assert client.put("/api/uploads/not-an-id/a.txt", content=b"x").status_code == 404
+    assert client.put(f"/api/uploads/{'0' * 32}/a.txt", content=b"x").status_code == 404
+
+
+def test_attached_files_have_a_size_limit_and_are_needed(make_app, monkeypatch):
+    from lapclusters.app import server
+
+    monkeypatch.setattr(server, "MAX_UPLOAD_BYTES", 10)
+    client, _ = make_app(run_worker=False)
+    host(client)
+    upload = client.post("/api/uploads").json()["id"]
+    reply = client.put(f"/api/uploads/{upload}/big.txt", content=b"x" * 11)
+    assert reply.status_code == 413
+    assert reply.json()["error"] == "big.txt is larger than 0 MB."
+    # Nothing was stored, so a job on this upload has nothing to read.
+    asked = client.post("/api/reviews", json={"kind": "ask", "upload": upload, "question": "Q?"})
+    assert asked.status_code == 400
+    assert asked.json()["error"] == "The attached files were not received. Attach them again."
+    wrong_kind = client.post("/api/reviews", json={"kind": "review", "upload": upload})
+    assert wrong_kind.json()["error"] == "Attached files can only be used with Ask about files."
+
+
+def test_only_the_host_attaches_files(make_app):
+    client, _ = make_app(run_worker=False)
+    assert client.post("/api/uploads").status_code == 403
+    client.post(
+        "/api/connect",
+        json={"role": "member", "password": PASSWORD, "name": "SomeHost",
+              "address": "localhost", "port": PORT, "follow": False},
+    )
+    assert client.post("/api/uploads").status_code == 403
+    assert client.put(f"/api/uploads/{'0' * 32}/a.txt", content=b"x").status_code == 403

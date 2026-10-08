@@ -15,4 +15,4 @@ __pycache__/
 review-report.md
 
 # The app's memory of its last connection (holds the cluster password)
-.lapclusters.json
+.lapclusters*.json
