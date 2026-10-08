@@ -1,6 +1,6 @@
-# [Project Name]
+# LapClusters
 
-> [One-line description of the project and what it does.]
+> Turn the laptops your team already owns into a private AI cluster that reviews a whole code repository in parallel, with no cloud bill and no code leaving the room.
 
 ## Team
 
@@ -19,7 +19,7 @@
 
 ### The Problem
 
-[Describe the problem being addressed, who is affected by it, and the context in which it occurs.]
+Small teams and students want to use AI on their own code, but cloud AI costs money per request and means sending private code to someone else's servers. A single laptop running a local model is private and free, but slow: reviewing a whole repository file by file can take a very long time.
 
 ### Why We Chose This Problem
 
@@ -27,7 +27,7 @@
 
 ## Solution
 
-[Describe the proposed solution and how it addresses the problem.]
+LapClusters pools a team's laptops into one private cluster. Every laptop runs its own copy of Gemma 4, and a shared Redis queue hands out work. For a code review, the orchestrator creates one task per file, the laptops review files in parallel, and the results are merged into a single report.
 
 ### Key Features
 
