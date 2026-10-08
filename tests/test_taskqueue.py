@@ -72,3 +72,72 @@ def test_task_goes_to_only_one_worker(queue):
     second = queue.claim("worker-b", block_ms=100)
     assert first is not None
     assert second is None
+
+
+def test_task_name_is_stored_with_its_status(queue):
+    task_id = queue.add_task("job1", {"prompt": "hi"}, name="src/app.py")
+    assert queue.get(task_id)["name"] == "src/app.py"
+
+
+def test_get_many_returns_each_task_by_id(queue):
+    first = queue.add_task("job1", {"prompt": "a"}, name="a")
+    second = queue.add_task("job1", {"prompt": "b"}, name="b")
+    infos = queue.get_many([first, second])
+    assert infos[first]["name"] == "a"
+    assert infos[second]["name"] == "b"
+    assert queue.get_many([]) == {}
+
+
+def test_heartbeat_lists_live_workers(queue):
+    assert queue.workers() == {}
+    queue.heartbeat("laptop-1", "gemma4:e4b")
+    queue.heartbeat("laptop-2", "gemma4:e2b")
+    assert queue.workers() == {"laptop-1": "gemma4:e4b", "laptop-2": "gemma4:e2b"}
+
+
+def test_task_abandoned_by_a_dead_worker_is_taken_over(queue):
+    queue.reclaim_idle_ms = 0
+    task_id = queue.add_task("job1", {"prompt": "hi"})
+    queue.claim("dead-worker", block_ms=100)
+    task = queue.claim("worker-b", block_ms=100)
+    assert task.task_id == task_id
+    assert queue.get(task_id)["worker"] == "worker-b"
+
+
+def test_task_held_by_a_live_worker_is_left_alone(queue):
+    queue.reclaim_idle_ms = 0
+    queue.add_task("job1", {"prompt": "hi"})
+    queue.heartbeat("slow-worker")
+    queue.claim("slow-worker", block_ms=100)
+    assert queue.claim("worker-b", block_ms=100) is None
+
+
+def test_restarted_worker_picks_up_its_own_unfinished_task(queue):
+    queue.reclaim_idle_ms = 0
+    task_id = queue.add_task("job1", {"prompt": "hi"})
+    queue.heartbeat("worker-a")
+    queue.claim("worker-a", block_ms=100)
+    again = queue.claim("worker-a", block_ms=100)
+    assert again.task_id == task_id
+
+
+def test_finished_task_left_unacknowledged_is_not_run_again(queue):
+    queue.reclaim_idle_ms = 0
+    task_id = queue.add_task("job1", {"prompt": "hi"})
+    queue.claim("dead-worker", block_ms=100)
+    queue.client.hset(f"task:{task_id}", mapping={"status": "done", "result": "answer"})
+    assert queue.claim("worker-b", block_ms=100) is None
+    assert queue.get(task_id)["result"] == "answer"
+    assert queue.client.xpending(queue.stream, queue.group)["pending"] == 0
+
+
+def test_task_abandoned_three_times_is_marked_failed(queue):
+    queue.reclaim_idle_ms = 0
+    task_id = queue.add_task("job1", {"prompt": "hi"})
+    queue.claim("dead-1", block_ms=100)
+    queue.claim("dead-2", block_ms=100)
+    queue.claim("dead-3", block_ms=100)
+    assert queue.claim("worker-b", block_ms=100) is None
+    info = queue.get(task_id)
+    assert info["status"] == "failed"
+    assert info["error"] == "abandoned by 3 workers in a row"
