@@ -19,9 +19,16 @@ from lapclusters.taskqueue import (
 
 
 def submit_and_wait(
-    queue: TaskQueue, prompt: str, timeout_s: float = 300.0, poll_s: float = 0.5
+    queue: TaskQueue,
+    prompt: str,
+    timeout_s: float = 300.0,
+    poll_s: float = 0.5,
+    preferred_model: str = "",
 ) -> dict[str, str]:
-    task_id = queue.add_task(uuid.uuid4().hex, {"prompt": prompt})
+    payload = {"prompt": prompt}
+    if preferred_model:
+        payload["preferred_model"] = preferred_model
+    task_id = queue.add_task(uuid.uuid4().hex, payload)
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         info = queue.get(task_id)
@@ -39,12 +46,15 @@ def main() -> int:
     )
     parser.add_argument("prompt")
     parser.add_argument("--timeout", type=float, default=300.0)
+    parser.add_argument("--model", default="", help="prefer a specific model for this prompt")
     args = parser.parse_args()
 
     try:
         queue = TaskQueue(connect(discovery.resolve(config.REDIS_URL)))
         queue.ensure_group()
-        info = submit_and_wait(queue, args.prompt, timeout_s=args.timeout)
+        info = submit_and_wait(
+            queue, args.prompt, timeout_s=args.timeout, preferred_model=args.model
+        )
     except discovery.DiscoveryError as exc:
         print(exc, file=sys.stderr)
         return 1

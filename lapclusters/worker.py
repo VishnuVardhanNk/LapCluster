@@ -183,6 +183,10 @@ def _accepted(generate: Callable[..., str]) -> set[str]:
         return set()
 
 
+def _preferred_model(payload: dict[str, str]) -> str:
+    return (payload.get("preferred_model") or "").strip()
+
+
 def run_task(
     payload: dict,
     generate: Callable[..., str],
@@ -227,6 +231,7 @@ def process_one(
     generate: Callable[..., str],
     block_ms: int = 5000,
     lanes: tuple[str, ...] = ("",),
+    runtime: Runtime | None = None,
 ) -> bool:
     """Handle at most one task. Returns False when none arrived in time.
 
@@ -237,6 +242,15 @@ def process_one(
     if task is None:
         return False
     live = _LiveOutput(queue, task.task_id)
+    preferred_model = _preferred_model(task.payload)
+    if preferred_model:
+        queue.note(task, preferred_model=preferred_model)
+        if runtime is not None and config.MODEL != preferred_model:
+            problem = runtime.set_model(preferred_model)
+            if problem:
+                queue.note(task, route_problem=problem)
+            else:
+                queue.note(task, route_applied=preferred_model)
     # The model in use when the task started is the one that handles it.
     model = {"model": config.MODEL}
     queue.note(task, **model)
@@ -335,7 +349,7 @@ def run_forever(
                 continue
         try:
             lanes = runtime.lanes() if runtime is not None else ("",)
-            if process_one(queue, consumer, generate, block_ms=block_ms, lanes=lanes):
+            if process_one(queue, consumer, generate, block_ms=block_ms, lanes=lanes, runtime=runtime):
                 print("Handled one task")
                 if runtime is not None:
                     runtime.trouble = ""

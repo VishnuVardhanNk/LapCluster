@@ -17,7 +17,7 @@ to each other directly.
 |--------|--------------|
 | `config.py` | Reads settings from environment variables or `.env` |
 | `taskqueue.py` | The only module that talks to Redis: tasks, jobs, heartbeats, live output, events |
-| `llm.py` | Calls Ollama; turns its errors into a `LaptopProblem` |
+| `llm.py` | Calls the local model server (Ollama, or llama.cpp when `MODEL_PROVIDER=llama_cpp`); turns its errors into a `LaptopProblem` |
 | `worker.py` | The worker loop, readiness check, heartbeat thread, model switching |
 | `repo.py` | Reads a folder or git URL: picks files, splits long ones, reads PDFs and pictures |
 | `review.py` | The code review prompt and the parsing of its JSON reply |

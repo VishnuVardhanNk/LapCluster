@@ -67,6 +67,7 @@ def start_job(
     job_id: str | None = None,
     kind: str = "review",
     question: str = "",
+    preferred_model: str = "",
 ) -> str:
     """Queue one task per file (or per part of a long file)."""
     job_id = job_id or uuid.uuid4().hex
@@ -83,6 +84,8 @@ def start_job(
                 "content": source.content, "first_line": str(source.first_line),
                 "ctx": _context(),
             }
+        if preferred_model:
+            payload["preferred_model"] = preferred_model
         queue.add_task(
             job_id,
             payload,
@@ -113,7 +116,7 @@ def _someone_can_see(queue: TaskQueue) -> bool:
     return any(info.get("vision") for info in queue.worker_details().values())
 
 
-def fill_job(queue: TaskQueue, job_id: str, source: str) -> Collected:
+def fill_job(queue: TaskQueue, job_id: str, source: str, preferred_model: str = "") -> Collected:
     """Queue the tasks of a prepared job.
 
     A source that cannot be read marks the job failed and raises RepoError.
@@ -154,7 +157,7 @@ def fill_job(queue: TaskQueue, job_id: str, source: str) -> Collected:
     if queue.job_meta(job_id).get("status") == "cancelled":
         # Cancelled while the repository was still being read: queue nothing.
         return collected
-    start_job(queue, collected.files, job_id, kind=kind, question=question)
+    start_job(queue, collected.files, job_id, kind=kind, question=question, preferred_model=preferred_model)
     queue.update_job(
         job_id,
         status="running",
@@ -445,6 +448,7 @@ def main() -> int:
     parser.add_argument("--code", metavar="REQUEST", help="write code for a request; no source needed")
     parser.add_argument("--output", default="review-report.md", help="where to write the report")
     parser.add_argument("--timeout", type=float, default=3600.0, help="seconds to wait")
+    parser.add_argument("--model", default="", help="prefer a specific model for this review")
     args = parser.parse_args()
 
     if args.prompt is not None:
@@ -468,7 +472,7 @@ def main() -> int:
         queue.ensure_group()
         job_id = prepare_job(queue, args.source, config.WORKER_NAME, kind=kind, question=question)
         try:
-            collected = fill_job(queue, job_id, args.source)
+            collected = fill_job(queue, job_id, args.source, preferred_model=args.model)
         except RepoError as exc:
             print(exc, file=sys.stderr)
             return 1

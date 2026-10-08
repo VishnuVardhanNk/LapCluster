@@ -41,6 +41,22 @@ ollama create gemma4:e4b -f Modelfile
 A model imported this way reads text only, unless its image projector was
 imported with it.
 
+#### Using llama.cpp instead of Ollama
+
+A laptop that already serves a model with llama.cpp's `llama-server` can use
+that instead. Create a file named `.env` in the project folder (after step 3)
+containing:
+
+```env
+MODEL_PROVIDER=llama_cpp
+LLAMA_CPP_URL=http://localhost:8080
+MODEL=your-model-name
+```
+
+This path is less tested than Ollama. Replies are not held to a JSON shape, so
+code review fails more often, and a llama.cpp laptop is not given work that
+includes pictures.
+
 ### 3. Get the project
 
 ```bash

@@ -26,6 +26,14 @@ def test_start_job_adds_one_named_review_task_per_file(queue):
     assert task.payload["path"] in ("a.py", "lib/b.js")
 
 
+def test_start_job_attaches_a_preferred_model_hint(queue):
+    files = [SourceFile("a.py", "x = 1\n")]
+    job_id = start_job(queue, files, preferred_model="model-b")
+    task = queue.claim("w1", block_ms=100)
+    assert task.payload["preferred_model"] == "model-b"
+    assert queue.get(task.task_id)["status"] == "running"
+
+
 def test_wait_for_job_returns_every_task_once_finished(queue):
     job_id = start_job(queue, [SourceFile("a.py", "x\n"), SourceFile("b.py", "y\n")])
     progress = []

@@ -12,7 +12,7 @@
 | Member            | Contribution                                                                 |
 | ----------------- | ---------------------------------------------------------------------------- |
 | Vishnu Vardhan N  | Team lead. Original idea, architecture and feature decisions, host laptop, testing, repository and submission |
-| Niranjan          | Worked on llama.cpp support as an alternative to Ollama (not merged into this repository) |
+| Niranjan          | llama.cpp support as a second model backend beside Ollama; a preferred-model option for jobs started from a terminal |
 | Nithin Krishnappa | Testing on his laptop; UI and design feedback                                |
 | Dheeraj           | Second laptop in the multi-laptop tests; ideas and features                  |
 
@@ -53,7 +53,8 @@ Built:
   - A laptop that cannot run its model (Ollama stopped, model not installed, out of memory) hands its task back to the queue and stops taking work until it is fixed, and its card says what is wrong.
   - A lost Redis connection is retried, a restarted Redis is recovered from, and failed tasks can be run again from the dashboard.
 - **History and activity**: every job is kept with its time and the laptops that took part, and joins, departures, takeovers, hand-backs and model changes are recorded.
-- **Everything also works from terminals**, without the dashboard.
+- **Two model backends**: Ollama by default, or a llama.cpp server on laptops that already run one, chosen per laptop in `.env`.
+- **Everything also works from terminals**, without the dashboard. A review or prompt started there can name the model it prefers with `--model`.
 
 Not built:
 
@@ -96,9 +97,9 @@ flowchart LR
 | Frontend        | Hand-written HTML, CSS and JavaScript, no build step     |
 | Backend         | Python 3.11+, FastAPI, uvicorn, redis-py, httpx, python-dotenv, pypdf, Pillow |
 | Database        | Redis 7 (Streams, consumer groups, hashes, sets, lists)  |
-| AI / ML         | Gemma 4 E4B (`gemma4:e4b`) served locally by Ollama      |
+| AI / ML         | Gemma 4 E4B (`gemma4:e4b`) served locally by Ollama, or by a llama.cpp server |
 | Infrastructure  | Docker (runs Redis), Git (clones repositories), pytest   |
-| APIs / Services | Ollama local HTTP API. No cloud services                 |
+| APIs / Services | Ollama or llama.cpp local HTTP API. No cloud services    |
 
 
 ### How It Works
@@ -109,7 +110,7 @@ flowchart LR
 - `lapclusters/review.py` builds the review prompt (with numbered lines) and cleans up the model's JSON reply.
 - `lapclusters/ask.py` holds the prompts for asking a question of one file and for piecing many answers into one. When the answers do not fit in a single request they are condensed in groups first, for as many rounds as it takes.
 - `lapclusters/worker.py` runs a loop: claim one task through the `workers` consumer group, run it on the model, store the result, acknowledge the task. A background thread refreshes the worker's heartbeat every 3 seconds and carries out model changes sent by the host.
-- `lapclusters/llm.py` makes the HTTP call to Ollama on the same laptop, streaming the reply so it can be shown while it is written.
+- `lapclusters/llm.py` makes the HTTP call to the model server on the same laptop (Ollama, or llama.cpp when `MODEL_PROVIDER=llama_cpp`), streaming the reply so it can be shown while it is written.
 - `lapclusters/discovery.py` and `lapclusters/host.py` let laptops find the host. The host answers a UDP broadcast question with its name and Redis port; the Redis password is never sent this way.
 - `lapclusters/app/` is the dashboard. `server.py` is a local web server, `node.py` runs this laptop's worker and its host duties, `views.py` shapes what Redis holds for display, and `static/` is the page. The page asks its own laptop's server for the cluster state once a second.
 - `lapclusters/cli.py` sends one prompt from a terminal and waits for the answer.
@@ -141,15 +142,16 @@ Everything in this repository after the organisers' template commit was built on
 7. Splitting long files, keeping pictures with their text, and routing picture work to laptops that can see.
 8. Handing tasks back from a laptop that cannot run them, and running failed tasks again.
 9. Attaching files in the browser, and a redesign of the landing page and cluster screens.
+10. llama.cpp as a second model backend, and a preferred-model option for terminal jobs.
 
-The project has 198 automated tests, which run against a real Redis.
+The project has 201 automated tests, which run against a real Redis.
 
 Measured during the event, on an earlier version: reviewing eight source files took 180 and 135 seconds on one laptop (an RTX 4060 laptop GPU), and 121 and 89 seconds with a second laptop added. That is two runs of each on a small job, and identical runs varied by tens of seconds, so treat it as an indication and not a benchmark.
 
 ### Team Contributions
 
 - **Vishnu Vardhan N:** Led the project. Proposed the orchestrator-and-worker cluster on Redis, decided the architecture and which features to build, ran the host laptop, directed the development and tested each feature as it was built, and maintained the repository.
-- **Niranjan:** Worked on llama.cpp support, to run Gemma 4 through llama.cpp as an alternative to Ollama. That work is not part of this repository, which supports Ollama only.
+- **Niranjan:** Added llama.cpp as a second model backend (`MODEL_PROVIDER` and `LLAMA_CPP_URL`), so a laptop that serves its model with llama.cpp can join without installing Ollama, and the `--model` option that lets a job started from a terminal name the model it prefers.
 - **Nithin Krishnappa:** Tested the project on his laptop, and gave the UI and design feedback that led to the redesign of the dashboard.
 - **Dheeraj:** Ran the second laptop in the multi-laptop tests, including the network, password and model setup that those tests uncovered, and contributed ideas and features.
 
@@ -181,6 +183,7 @@ See [Setup and Usage](#setup-and-usage) to run it locally.
 ### Open Source Components
 
 - **Ollama:** runs the model locally and exposes it over HTTP.
+- **llama.cpp:** an alternative local model server, for laptops that already use it.
 - **Redis:** task queue and state store.
 - **FastAPI** and **uvicorn:** the dashboard's local web server.
 - **redis-py:** Python client for Redis.
@@ -203,7 +206,7 @@ Most of the code and tests in this repository were written with an AI coding ass
 
 - Python 3.11 or newer
 - Docker Desktop (to run Redis, on the host laptop only)
-- Ollama with the `gemma4:e4b` model pulled
+- Ollama with the `gemma4:e4b` model pulled, or a running llama.cpp server
 
 A step-by-step guide for teammates is in [docs/SETUP.md](docs/SETUP.md).
 
@@ -233,7 +236,9 @@ None are required when using the app. To change a default, copy `.env.example` t
 ```env
 REDIS_URL=redis://localhost:6379/0
 CLUSTER_HOST=
+MODEL_PROVIDER=ollama
 OLLAMA_URL=http://localhost:11434
+LLAMA_CPP_URL=http://localhost:8080
 MODEL=gemma4:e4b
 WORKER_NAME=
 MODEL_TIMEOUT_S=600
@@ -242,6 +247,8 @@ PART_CHARS=48000
 ```
 
 `MODEL_CONTEXT` is how many tokens the model may read and write per request. The default of 32768 was measured to fit Gemma 4 E4B entirely on an 8 GB graphics card (an RTX 4060 laptop GPU, about 5.1 GB in use). The host's value is sent with every task, so the whole cluster uses the same. Lower it, together with `PART_CHARS`, if the laptops are weaker.
+
+`MODEL_PROVIDER` is `ollama` or `llama_cpp`. With `llama_cpp`, the laptop calls the server at `LLAMA_CPP_URL` and `MODEL` is the name that server uses.
 
 ### Running the Project
 
@@ -286,7 +293,10 @@ python -m lapclusters.orchestrator tests/fixtures/sample_repo
 python -m lapclusters.orchestrator examples/sales-pack --ask "What does each file say?"
 python -m lapclusters.orchestrator --prompt "Explain what a task queue is in one sentence."
 python -m lapclusters.orchestrator --code "A Python function that parses an ISO date"
+python -m lapclusters.orchestrator tests/fixtures/sample_repo --model gemma4:e2b
 ```
+
+`--model` asks each laptop to switch to that model when it takes a task of the review. The laptop stays on that model afterwards. A laptop that does not have it keeps its own, and the task records that.
 
 `python -m lapclusters.discovery` lists the hosts visible from a laptop. If the network blocks broadcasts, put the host's IP address in place of `auto`.
 
@@ -301,6 +311,7 @@ python -m pytest
 ### Known Limitations
 
 - Run across two laptops so far, not yet four.
+- The llama.cpp backend is less tested than Ollama. Its replies are not held to a JSON schema, so code review fails more often on it; a llama.cpp laptop is not given work that includes pictures; and the dashboard's messages about a laptop's model still say Ollama.
 - Every laptop must run the same version. A laptop on an older version is shown as needing an update and is given no work.
 - Automatic discovery needs a network that allows broadcasts between devices, such as a phone hotspot. Some campus and office networks do not.
 - Automatic discovery trusts whoever answers. On a network you do not control, another device could pose as a host and receive the Redis password a laptop sends it, so use a fixed address or a private network such as Tailscale there.
@@ -314,12 +325,14 @@ python -m pytest
 
 **Devpost Project:** [Devpost Project URL]
 
+**Write-up on DEV:** https://dev.to/creature917519/labclusters-3fkk
+
 ## Credits and License
 
 ### Credits
 
 - Gemma 4 by Google.
-- Ollama, Redis, FastAPI, uvicorn, redis-py, httpx, pypdf, Pillow, python-dotenv, pytest and Docker, each under its own licence.
+- Ollama, llama.cpp, Redis, FastAPI, uvicorn, redis-py, httpx, pypdf, Pillow, python-dotenv, pytest and Docker, each under its own licence.
 - Claude Code by Anthropic, used as a coding assistant during development.
 - Repository template by the Hacktoberfest Hack Day Coimbatore 2026 organisers (INIT Club and iDEA Club, with Major League Hacking).
 
