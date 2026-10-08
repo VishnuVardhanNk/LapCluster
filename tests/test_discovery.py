@@ -4,6 +4,55 @@ from lapclusters import config, discovery
 from lapclusters.discovery import DiscoveryError, Host, find_hosts, resolve, start_beacon
 
 
+@pytest.fixture(autouse=True)
+def no_remembered_host(monkeypatch):
+    # resolve() remembers the host it joined; start every test with none.
+    monkeypatch.setattr(config, "CLUSTER_HOST", "")
+
+
+ALPHA = Host(name="Alpha", address="10.0.0.1", redis_port=6379)
+STRYKER = Host(name="Stryker", address="10.0.0.2", redis_port=6379)
+ZETA = Host(name="Zeta", address="10.0.0.3", redis_port=6379)
+
+
+def test_resolve_lets_the_user_choose_between_several_hosts(monkeypatch):
+    monkeypatch.setattr(discovery, "find_hosts", lambda **kwargs: [ALPHA, STRYKER, ZETA])
+    url = resolve("redis://:secret@auto:6379/0", ask=lambda hosts: hosts[2])
+    assert url == "redis://:secret@10.0.0.3:6379/0"
+
+
+def test_resolve_stays_with_the_chosen_host_without_asking_again(monkeypatch):
+    monkeypatch.setattr(discovery, "find_hosts", lambda **kwargs: [ALPHA, STRYKER, ZETA])
+    resolve("redis://auto:6379/0", ask=lambda hosts: hosts[1])
+    again = resolve("redis://auto:6379/0", ask=lambda hosts: pytest.fail("asked twice"))
+    assert again == "redis://10.0.0.2:6379/0"
+
+
+def test_resolve_does_not_drift_to_another_host_when_its_own_disappears(monkeypatch):
+    monkeypatch.setattr(discovery, "find_hosts", lambda **kwargs: [STRYKER])
+    resolve("redis://auto:6379/0")
+    monkeypatch.setattr(discovery, "find_hosts", lambda **kwargs: [ALPHA])
+    with pytest.raises(DiscoveryError, match="'Stryker' is not on this network"):
+        resolve("redis://auto:6379/0")
+
+
+def test_terminal_prompt_repeats_until_a_valid_number(monkeypatch, capsys):
+    answers = iter(["", "x", "9", "2"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
+    assert discovery.ask_in_terminal([ALPHA, STRYKER, ZETA]) == STRYKER
+    shown = capsys.readouterr().out
+    assert "1. Alpha" in shown and "3. Zeta" in shown
+
+
+def test_terminal_prompt_gives_up_cleanly_when_input_ends(monkeypatch):
+    def no_input(prompt):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", no_input)
+    with pytest.raises(DiscoveryError, match="No host was chosen"):
+        discovery.ask_in_terminal([ALPHA, STRYKER])
+
+
 def test_finder_gets_the_hosts_name_address_and_redis_port():
     stop, port = start_beacon("Stryker", redis_port=6379, port=0)
     try:

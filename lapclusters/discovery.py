@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
+from typing import Callable
 from urllib.parse import urlsplit
 
 from lapclusters import config
@@ -159,8 +160,47 @@ def is_auto(url: str) -> bool:
     return (urlsplit(url).hostname or "").lower() == AUTO
 
 
-def resolve(url: str) -> str:
-    """Replace the host name `auto` in a Redis URL with the discovered host."""
+def ask_in_terminal(hosts: list[Host]) -> Host:
+    """Let the person at the keyboard choose between several hosts."""
+    print("Several LapClusters hosts are on this network:")
+    for number, host in enumerate(hosts, start=1):
+        print(f"  {number}. {host.name}  ({host.address})")
+    while True:
+        try:
+            answer = input(f"Join which one? [1-{len(hosts)}]: ").strip()
+        except EOFError as exc:
+            raise DiscoveryError("No host was chosen.") from exc
+        if answer.isdigit() and 1 <= int(answer) <= len(hosts):
+            return hosts[int(answer) - 1]
+        print(f"Type a number from 1 to {len(hosts)}.")
+
+
+def _pick(hosts: list[Host], ask: Callable[[list[Host]], Host] | None) -> Host:
+    names = ", ".join(h.name for h in hosts)
+    if config.CLUSTER_HOST:
+        for host in hosts:
+            if host.name.lower() == config.CLUSTER_HOST.lower():
+                return host
+        # Never drift to a different cluster just because it is the only one visible.
+        raise DiscoveryError(
+            f"Host '{config.CLUSTER_HOST}' is not on this network right now. Visible: {names}."
+        )
+    if len(hosts) == 1:
+        return hosts[0]
+    if ask is None:
+        raise DiscoveryError(
+            f"Several LapClusters hosts answered: {names}. "
+            "Set CLUSTER_HOST in .env to the one you want."
+        )
+    return ask(hosts)
+
+
+def resolve(url: str, ask: Callable[[list[Host]], Host] | None = None) -> str:
+    """Replace the host name `auto` in a Redis URL with the discovered host.
+
+    When several hosts answer and none is named in CLUSTER_HOST, `ask` chooses.
+    It defaults to a prompt in the terminal when there is someone to answer it.
+    """
     if not is_auto(url):
         return url
     hosts = find_hosts()
@@ -169,17 +209,11 @@ def resolve(url: str) -> str:
             "No LapClusters host found on this network. Check that the host laptop is "
             "running 'python -m lapclusters.host' and that both laptops are on the same Wi-Fi."
         )
-    if len(hosts) > 1:
-        wanted = config.CLUSTER_HOST.lower()
-        matching = [h for h in hosts if h.name.lower() == wanted]
-        if not matching:
-            names = ", ".join(h.name for h in hosts)
-            raise DiscoveryError(
-                f"Several LapClusters hosts answered: {names}. "
-                "Set CLUSTER_HOST in .env to the one you want."
-            )
-        hosts = matching
-    host = hosts[0]
+    if ask is None and sys.stdin is not None and sys.stdin.isatty():
+        ask = ask_in_terminal
+    host = _pick(hosts, ask)
+    # Stay with this host for the rest of the session, including reconnects.
+    config.CLUSTER_HOST = host.name
     parts = urlsplit(url)
     credentials = parts.netloc.rpartition("@")[0]
     netloc = f"{host.address}:{host.redis_port}"

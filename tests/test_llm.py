@@ -1,0 +1,76 @@
+import httpx
+import pytest
+
+from lapclusters import llm
+
+
+def _reply(status: int, body: dict | None = None) -> httpx.Response:
+    request = httpx.Request("POST", "http://localhost:11434/api/generate")
+    return httpx.Response(status, json=body or {}, request=request)
+
+
+@pytest.fixture
+def replies(monkeypatch):
+    """Queue up what the model server will answer; records each request body."""
+    script: list = []
+    sent: list = []
+
+    def post(url, json, timeout):
+        sent.append(json)
+        outcome = script.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(llm.httpx, "post", post)
+    monkeypatch.setattr(llm, "RETRY_DELAY_S", 0)
+    return script, sent
+
+
+def test_returns_the_models_reply_and_passes_the_schema(replies):
+    script, sent = replies
+    script.append(_reply(200, {"response": "hello"}))
+    schema = {"type": "object"}
+    assert llm.generate("hi", schema) == "hello"
+    assert sent[0]["prompt"] == "hi"
+    assert sent[0]["format"] == schema
+    assert sent[0]["options"]["num_ctx"] == llm.CONTEXT_TOKENS
+
+
+def test_retries_once_when_the_model_server_has_a_hiccup(replies):
+    # Ollama answers 500 when the model fails to load, which is often temporary.
+    script, sent = replies
+    script += [_reply(500), _reply(200, {"response": "second time lucky"})]
+    assert llm.generate("hi") == "second time lucky"
+    assert len(sent) == 2
+
+
+def test_retries_once_when_the_model_server_is_briefly_unreachable(replies):
+    script, sent = replies
+    script += [httpx.ConnectError("refused"), _reply(200, {"response": "ok"})]
+    assert llm.generate("hi") == "ok"
+
+
+def test_gives_up_after_the_second_failure(replies):
+    script, sent = replies
+    script += [_reply(500), _reply(500)]
+    with pytest.raises(httpx.HTTPStatusError):
+        llm.generate("hi")
+    assert len(sent) == 2
+
+
+def test_does_not_retry_a_request_the_server_rejects(replies):
+    # 404 means the model is not installed; asking again will not help.
+    script, sent = replies
+    script.append(_reply(404))
+    with pytest.raises(httpx.HTTPStatusError):
+        llm.generate("hi")
+    assert len(sent) == 1
+
+
+def test_does_not_retry_after_waiting_out_the_full_timeout(replies):
+    script, sent = replies
+    script.append(httpx.ReadTimeout("too slow"))
+    with pytest.raises(httpx.ReadTimeout):
+        llm.generate("hi")
+    assert len(sent) == 1

@@ -11,7 +11,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Callable
 
-from lapclusters import config
+from lapclusters import config, discovery
 from lapclusters.repo import RepoError, SourceFile, collect_files, open_repo
 from lapclusters.review import SEVERITIES
 from lapclusters.taskqueue import (
@@ -142,7 +142,11 @@ def main() -> int:
         print("No source files found to review.", file=sys.stderr)
         return 1
 
-    queue = TaskQueue(connect(config.REDIS_URL))
+    try:
+        queue = TaskQueue(connect(discovery.resolve(config.REDIS_URL)))
+    except discovery.DiscoveryError as exc:
+        print(exc, file=sys.stderr)
+        return 1
     started = time.monotonic()
     job_id = None
     try:

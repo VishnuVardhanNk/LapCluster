@@ -3,7 +3,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from lapclusters import config
+from lapclusters import config, discovery
 from lapclusters.taskqueue import TaskQueue, connect
 
 
@@ -11,7 +11,10 @@ def _test_redis_url() -> str:
     # Same server and password as real work, but database 15, so tests never
     # touch real tasks, which live in database 0.
     explicit = os.environ.get("TEST_REDIS_URL")
-    return explicit or urlsplit(config.REDIS_URL)._replace(path="/15").geturl()
+    if explicit:
+        return explicit
+    # On a laptop that joins with "auto", find the host first.
+    return urlsplit(discovery.resolve(config.REDIS_URL))._replace(path="/15").geturl()
 
 
 TEST_REDIS_URL = _test_redis_url()

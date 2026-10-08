@@ -7,7 +7,7 @@ import sys
 import time
 import uuid
 
-from lapclusters import config
+from lapclusters import config, discovery
 from lapclusters.taskqueue import (
     CONNECTION_ERRORS,
     FAILED,
@@ -41,10 +41,13 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=300.0)
     args = parser.parse_args()
 
-    queue = TaskQueue(connect(config.REDIS_URL))
     try:
+        queue = TaskQueue(connect(discovery.resolve(config.REDIS_URL)))
         queue.ensure_group()
         info = submit_and_wait(queue, args.prompt, timeout_s=args.timeout)
+    except discovery.DiscoveryError as exc:
+        print(exc, file=sys.stderr)
+        return 1
     except CONNECTION_ERRORS as exc:
         print(connection_problem(exc), file=sys.stderr)
         return 1

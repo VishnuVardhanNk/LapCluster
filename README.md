@@ -231,6 +231,8 @@ One laptop is the host: it runs Redis and the orchestrator. Every laptop, includ
 
 Nobody types an IP address, and if the host's address changes a worker finds it again within a few seconds. `python -m lapclusters.discovery` lists the hosts visible from a laptop. If the network blocks broadcasts, put the host's IP address in place of `auto`.
 
+If several hosts are on the same network, the worker lists them and asks which one to join, then stays with that host for the rest of the session. To skip the question, name the host in `.env` with `CLUSTER_HOST=`.
+
 Only the host needs the repository and internet access. Step-by-step commands are in [docs/SETUP.md](docs/SETUP.md).
 
 Run the tests (Redis must be running):
@@ -245,6 +247,7 @@ To watch tasks move through Redis, and for what each teammate builds next, see [
 
 - Run across two laptops so far, not yet four.
 - Automatic discovery needs a network that allows broadcasts between devices, such as a phone hotspot. Some campus and office networks do not.
+- Automatic discovery trusts whoever answers. On a network you do not control, another device could pose as a host and receive the Redis password a worker sends it, so use a fixed address or a private network such as Tailscale there.
 - Source files over 20 KB are listed as not reviewed, because they do not fit in the model's context.
 - Each file is reviewed in isolation, so problems that span several files are not found.
 - The model sometimes reports problems that are not real. Treat the report as leads to check.
