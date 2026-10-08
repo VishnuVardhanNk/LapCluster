@@ -4,6 +4,36 @@
 
 **Status:** the backend is built (checkpoints 1 to 3 of 5). A repository can be reviewed end to end, several laptops share the work, and a worker that dies mid-job has its task taken over. It has been run across two laptops on a phone hotspot. The dashboard app is built and has been exercised on one laptop, with a second copy joining it as a member; it has not yet been run on two separate laptops. Capability routing, cross-checking and a proper benchmark are still to come and are marked as planned below.
 
+## Product Strategy
+
+LapClusters is a private orchestration layer for heterogeneous small-language-model fleets. The product is not just "run a model on every laptop"; it is "keep local inference private, then use the server to route the right work to the right peer at the right time."
+
+### Platform Pillars
+
+| Pillar | What it means | Example features |
+| --- | --- | --- |
+| Private by default | Data stays inside the room and on the local network. | Local Ollama workers, Redis on the host, no cloud dependency. |
+| Capability-aware control plane | The server keeps a live view of what each peer can do. | Model inventory, host discovery, live worker status, topology awareness. |
+| Adaptive routing | Requests are matched to the best peer for the current task. | D-TAR, load balancing, latency-sensitive assignment, failover. |
+| Stateful workflows | Multi-step work keeps its context as it moves across peers. | Persistent job state, checkpoints, resumable sessions, handoff metadata. |
+| Easy deployment | A team should be able to join the cluster in minutes. | Auto-discovery, simple `.env` settings, dashboard-driven joins, local-only setup. |
+
+### Operating Modes
+
+- **Review mode:** the current shipped experience. One repository becomes one distributed review job, split into per-file tasks.
+- **D-TAR mode:** the next routing layer. The server builds a dynamic topology map of peers and routes work by capability, model size, load, network proximity, and task priority.
+- **Pi Harness mode:** the advanced workflow mode. The cluster wraps a long-running multi-agent session in a persistent harness so a complex task can be planned, delegated, checkpointed, resumed, and recovered across multiple SLM peers.
+
+### Feature Set
+
+- A central server that understands peer membership, health, and model availability.
+- Heterogeneous worker support so laptops with different SLMs can still cooperate.
+- Policy-driven task routing instead of fixed one-worker-per-task assignment.
+- Session persistence for long workflows, not just one-shot prompts.
+- Multi-agent task graphs with explicit state handoff between steps.
+- Operator-facing observability for topology, task progress, and per-peer load.
+- Simple onboarding for hackathon-scale deployment and demos.
+
 ## Team
 
 **Team Name:** [Team Name]
@@ -61,16 +91,22 @@ Built:
 
 Planned:
 
-- A run across all four laptops.
+- D-TAR capability routing: the server should score peers by model fit, current load, heartbeat health and latency, then route each task to the best candidate.
+- Pi Harness mode: a persistent session envelope for complex workflows, with checkpointed state, resumable steps, delegated subtasks and controlled handoff between SLM peers.
+- Workflow templates for common cluster jobs such as repository review, issue triage, summarization and refactor planning.
 - Cross-checking high-severity findings on a second laptop and model.
 - Reading scanned PDFs, which have no text to extract.
 - A benchmark comparing one laptop against the full cluster.
+- Routing large files only to laptops whose model can fit them.
+- A run across all four laptops.
 
 ## Innovation and Differentiation
 
 Existing tools for pooling machines, such as exo, Petals and llama.cpp's RPC mode, split one large model across devices. LapClusters does the opposite: each laptop runs a complete small model, and the cluster distributes independent tasks between them. That keeps every laptop useful on its own, tolerates a laptop leaving mid-job, and needs nothing more than a network connection to Redis.
 
 Work is split by a fixed rule (one task per file, or per part of a long file) and not by asking the model to plan, because small models are reliable at narrow tasks and unreliable at decomposing large ones.
+
+LapClusters' differentiation should eventually come from orchestration rather than raw model size. D-TAR keeps a live capability map so the server can choose the right peer for each request, while Pi Harness mode gives the platform a stateful workflow shell for longer, multi-step tasks that need memory, delegation and recovery.
 
 ## Technical Implementation
 

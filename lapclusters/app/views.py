@@ -12,6 +12,7 @@ from lapclusters.taskqueue import DONE, FAILED, FINISHED, PENDING, RUNNING, Task
 TASK_FIELDS = [
     "status", "name", "worker", "model", "queued_at", "started_at", "finished_at",
     "error", "taken_over_from", "type", "file", "part", "lane", "attempts", "last_error",
+    "preferred_model", "route_applied", "route_problem",
     *(f"count_{level}" for level in SEVERITIES),
 ]
 REPORT_FIELDS = ["status", "name", "worker", "model", "result", "error", "type", "file"]
@@ -226,6 +227,9 @@ def task_view(queue: TaskQueue, task_id: str) -> dict | None:
         "status": info.get("status", PENDING),
         "worker": info.get("worker", ""),
         "model": info.get("model", ""),
+        "preferred_model": info.get("preferred_model", ""),
+        "route_applied": info.get("route_applied", ""),
+        "route_problem": info.get("route_problem", ""),
         "queued_at": _number(info.get("queued_at")),
         "started_at": _number(info.get("started_at")),
         "finished_at": _number(info.get("finished_at")),

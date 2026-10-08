@@ -4,6 +4,7 @@ import time
 import pytest
 import redis
 
+from lapclusters import config
 from lapclusters.worker import process_one, run_forever, start_heartbeat
 
 
@@ -15,6 +16,33 @@ def test_process_one_completes_task(queue):
     assert info["status"] == "done"
     assert info["result"] == "echo:2+2?"
     assert info["worker"] == "w1"
+
+
+def test_process_one_switches_to_a_requested_model(queue):
+    class _Runtime:
+        def __init__(self):
+            self.calls = []
+
+        def set_model(self, model):
+            self.calls.append(model)
+            config.MODEL = model
+            return ""
+
+    original = config.MODEL
+    runtime = _Runtime()
+    try:
+        task_id = queue.add_task("job1", {"prompt": "2+2?", "preferred_model": "model-b"})
+        handled = process_one(
+            queue, "w1", lambda prompt: f"echo:{prompt}", block_ms=100, runtime=runtime
+        )
+        assert handled is True
+        info = queue.get(task_id)
+        assert runtime.calls == ["model-b"]
+        assert info["preferred_model"] == "model-b"
+        assert info["route_applied"] == "model-b"
+        assert info["model"] == "model-b"
+    finally:
+        config.MODEL = original
 
 
 def test_process_one_returns_false_when_idle(queue):

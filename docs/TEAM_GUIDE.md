@@ -2,6 +2,15 @@
 
 What exists, how it works, how to test it, and what each person builds next.
 
+## Strategy snapshot
+
+LapClusters starts with the current review pipeline and grows into a private orchestration platform for heterogeneous SLM peers. The next two platform modes are:
+
+- **D-TAR:** dynamic topology and adaptive routing, so the host can choose the best laptop for each task by capability, load, latency and health.
+- **Pi Harness mode:** a persistent multi-agent workflow shell for complex jobs that need planning, tool use, checkpoints, and recovery across several peers.
+
+This keeps the cluster edge-first and private while making the server smarter about routing, state, and long-running workflows.
+
 ## 1. Technologies
 
 | Technology | Used for | Status |
