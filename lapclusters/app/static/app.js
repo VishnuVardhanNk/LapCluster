@@ -198,9 +198,15 @@ let connectEls = null;
 
 function buildConnect() {
   const password = h("input", {
-    class: "field", type: "password", autocomplete: "off", placeholder: "Leave empty if Redis has none",
+    // "new-password" stops the browser filling in a password saved for some
+    // other site, which then fails here with no visible reason.
+    class: "field", type: "password", autocomplete: "new-password", placeholder: "Leave empty if Redis has none",
     value: ui.password || "", oninput: (e) => { ui.password = e.target.value; },
   });
+  const reveal = h("label", { class: "row small muted" },
+    h("input", { type: "checkbox", onchange: (e) => { password.type = e.target.checked ? "text" : "password"; } }),
+    "Show the password",
+  );
   const address = h("input", { class: "field", placeholder: "192.168.1.20", "aria-label": "Host address" });
   const port = h("input", { class: "field", value: "6379", inputmode: "numeric", "aria-label": "Redis port" });
   connectEls = {
@@ -228,6 +234,7 @@ function buildConnect() {
         password,
         "The Redis password. Every laptop in a cluster uses the same one.",
       ),
+      reveal,
     ),
     h("div", { class: "choices" },
       h("div", { class: "panel" },
