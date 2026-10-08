@@ -7,9 +7,11 @@ import socket
 import sys
 import threading
 import webbrowser
+from pathlib import Path
 
 import uvicorn
 
+from lapclusters.app.node import Node
 from lapclusters.app.server import create_app
 
 FIRST_PORT = 8470
@@ -38,7 +40,11 @@ def main() -> int:
     print("Leave this window open. Press Ctrl+C to stop.")
     if not args.no_browser:
         threading.Timer(1.0, webbrowser.open, [url]).start()
-    uvicorn.run(create_app(), host="127.0.0.1", port=port, log_level="warning")
+    # Remembered next to the project, and listed in .gitignore: it holds the
+    # cluster password, as .env does.
+    node = Node(memory=Path(__file__).resolve().parent.parent / ".lapclusters.json")
+    threading.Thread(target=node.restore, daemon=True).start()
+    uvicorn.run(create_app(node), host="127.0.0.1", port=port, log_level="warning")
     return 0
 
 

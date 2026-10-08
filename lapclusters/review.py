@@ -50,11 +50,15 @@ File: {path}
 _CODE_FENCE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
 
 
-def build_prompt(path: str, content: str) -> str:
+def build_prompt(path: str, content: str, first_line: int = 1, part: str = "") -> str:
+    """`first_line` is the file's line number of the first line of `content`,
+    so that a part of a long file is numbered as it is in the whole file."""
     numbered = "\n".join(
-        f"{number} | {line}" for number, line in enumerate(content.splitlines(), start=1)
+        f"{number} | {line}"
+        for number, line in enumerate(content.splitlines(), start=first_line)
     )
-    return PROMPT.format(path=path, numbered=numbered)
+    label = f"{path} ({part} of a longer file; judge only what is shown)" if part else path
+    return PROMPT.format(path=label, numbered=numbered)
 
 
 def _line_number(value) -> int:
@@ -109,7 +113,11 @@ def run_detailed(
     prompt, the model's raw reply, and a count of findings per severity."""
     if "path" not in payload or "content" not in payload:
         raise TaskError("review task needs a path and content")
-    prompt = build_prompt(payload["path"], payload["content"])
+    try:
+        first_line = int(payload.get("first_line") or 1)
+    except (TypeError, ValueError):
+        first_line = 1
+    prompt = build_prompt(payload["path"], payload["content"], first_line, payload.get("part", ""))
     details = {"prompt": prompt, "raw": ""}
     problem = ""
     for _attempt in range(2):

@@ -19,7 +19,18 @@ from pydantic import BaseModel
 from lapclusters import config, discovery
 from lapclusters.app import views
 from lapclusters.app.node import HOST, ConnectError, Node
-from lapclusters.orchestrator import build_report, fill_job, prepare_job
+from lapclusters.orchestrator import (
+    DEFAULT_QUESTION,
+    KINDS,
+    NEEDS_QUESTION,
+    NEEDS_SOURCE,
+    build_answer_report,
+    build_report,
+    fill_job,
+    job_answer,
+    prepare_job,
+    retry_job,
+)
 from lapclusters.repo import RepoError
 from lapclusters.taskqueue import CONNECTION_ERRORS, connection_problem
 
@@ -46,7 +57,9 @@ class ModelBody(BaseModel):
 
 
 class ReviewBody(BaseModel):
-    source: str
+    source: str = ""
+    kind: str = "review"
+    question: str = ""
 
 
 def _problem(message: str, status: int = 400) -> JSONResponse:
@@ -120,7 +133,7 @@ def create_app(node: Node | None = None) -> FastAPI:
 
     @app.post("/api/disconnect")
     def disconnect():
-        node.disconnect()
+        node.leave()
         return {"ok": True}
 
     # --- state -----------------------------------------------------------
@@ -139,10 +152,15 @@ def create_app(node: Node | None = None) -> FastAPI:
             "announcing": node.announcing,
             "connected": False,
             "error": "",
-            "worker": {"state": node.worker_state, "note": node.worker_note},
+            "worker": {
+                "state": node.worker_state,
+                "note": node.worker_note or node.runtime.problem(),
+            },
             "model": config.MODEL,
             "models": node.runtime.models,
             "ollama": node.runtime.ollama_ok,
+            "vision": node.runtime.vision,
+            "restore_problem": node.restore_problem,
             "saved_password": unquote(saved.password or "") if node.role is None else "",
             "saved_port": saved.port or 6379,
         }
@@ -210,12 +228,19 @@ def create_app(node: Node | None = None) -> FastAPI:
     @app.post("/api/reviews")
     def start_review(body: ReviewBody):
         if node.role != HOST:
-            return _problem("Only the host can start a review.", 403)
-        source = body.source.strip().strip('"')
-        if not source:
+            return _problem("Only the host can start a job.", 403)
+        if body.kind not in KINDS:
+            return _problem("Unknown kind of job.")
+        source = body.source.strip().strip('"') if body.kind in NEEDS_SOURCE else ""
+        question = body.question.strip() if body.kind in NEEDS_QUESTION else ""
+        if body.kind in NEEDS_SOURCE and not source:
             return _problem("Enter a folder or a git URL.")
+        if body.kind in ("prompt", "code") and not question:
+            return _problem("Type what you want to ask.")
+        if body.kind == "ask" and not question:
+            question = DEFAULT_QUESTION
         queue = node.queue()
-        job_id = prepare_job(queue, source, started_by=node.name)
+        job_id = prepare_job(queue, source, started_by=node.name, kind=body.kind, question=question)
 
         def fill() -> None:
             try:
@@ -245,6 +270,21 @@ def create_app(node: Node | None = None) -> FastAPI:
             return _problem("No such review.", 404)
         return {"ok": True, "cancelled": views.cancel_job(queue, job_id)}
 
+    @app.post("/api/reviews/{job_id}/retry")
+    def retry_review(job_id: str):
+        if node.role != HOST:
+            return _problem("Only the host can run failed tasks again.", 403)
+        queue = node.queue()
+        if not queue.job_meta(job_id):
+            return _problem("No such job.", 404)
+        return {"ok": True, "retried": retry_job(queue, job_id)}
+
+    @app.post("/api/history/clear")
+    def clear_history():
+        if node.role != HOST:
+            return _problem("Only the host can clear the history.", 403)
+        return {"ok": True, "deleted": views.clear_history(node.queue())}
+
     @app.get("/api/reviews/{job_id}/findings")
     def findings(job_id: str):
         queue = node.queue()
@@ -259,7 +299,14 @@ def create_app(node: Node | None = None) -> FastAPI:
         if not meta:
             return _problem("No such review.", 404)
         skipped = [tuple(item) for item in views._loads(meta.get("skipped"), [])]
-        text = build_report(meta.get("source", ""), views.report_rows(queue, job_id), skipped)
+        rows = views.report_rows(queue, job_id)
+        if meta.get("kind", "review") == "review":
+            text = build_report(meta.get("source", ""), rows, skipped)
+        else:
+            text = build_answer_report(
+                meta.get("source", ""), meta.get("question", ""), job_answer(queue, job_id),
+                rows, skipped,
+            )
         return PlainTextResponse(
             text,
             media_type="text/markdown; charset=utf-8",

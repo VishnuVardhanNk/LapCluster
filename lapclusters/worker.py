@@ -12,7 +12,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from lapclusters import config, discovery, llm, review
+from lapclusters import ask, config, discovery, llm, review
+from lapclusters.llm import LaptopProblem
 from lapclusters.taskqueue import (
     CONNECTION_ERRORS,
     TaskError,
@@ -23,6 +24,8 @@ from lapclusters.taskqueue import (
 
 # How often the list of installed models is re-read, in heartbeats.
 MODEL_REFRESH_BEATS = 6
+# How long a laptop stays out of the queue after it failed to run a task.
+COOLDOWN_S = 20.0
 
 
 def _describe(exc: Exception) -> str:
@@ -40,6 +43,10 @@ class Runtime:
         self.via_app = via_app
         self.models: list[str] = []
         self.ollama_ok = False
+        self.checked = False
+        # Set when a task could not be run here; cleared when one succeeds.
+        self.trouble = ""
+        self._sight: dict[str, bool] = {}
 
     def refresh_models(self) -> None:
         try:
@@ -47,6 +54,43 @@ class Runtime:
             self.ollama_ok = True
         except (httpx.HTTPError, ValueError, KeyError):
             self.ollama_ok = False
+        self.checked = True
+        self._check_sight(config.MODEL)
+
+    def _check_sight(self, model: str) -> None:
+        if not self.ollama_ok or model not in self.models or model in self._sight:
+            return
+        try:
+            self._sight[model] = llm.can_see(model)
+        except (httpx.HTTPError, ValueError, KeyError):
+            pass  # unknown for now; treated as unable until a check succeeds
+
+    @property
+    def vision(self) -> bool:
+        return self.ready() and self._sight.get(config.MODEL, False)
+
+    def ready(self) -> bool:
+        """Can this laptop run a task right now?"""
+        return self.ollama_ok and config.MODEL in self.models
+
+    def problem(self) -> str:
+        """Why this laptop is not taking work, in words its owner can act on."""
+        if not self.checked:
+            return ""
+        if not self.ollama_ok:
+            return "Ollama is not running on this laptop. Start it and reviewing resumes by itself."
+        if config.MODEL not in self.models:
+            installed = ", ".join(self.models) or "none"
+            return (
+                f"The model {config.MODEL} is not installed on this laptop, so it is not "
+                f"taking work. Choose one that is installed ({installed}), or run "
+                f"'ollama pull {config.MODEL}'."
+            )
+        return self.trouble
+
+    def lanes(self) -> tuple[str, ...]:
+        """Which queues this laptop may take work from."""
+        return ("", "vision") if self.vision else ("",)
 
     def info(self) -> str:
         return json.dumps(
@@ -55,6 +99,9 @@ class Runtime:
                 "models": self.models,
                 "ollama": self.ollama_ok,
                 "app": self.via_app,
+                "ready": self.ready(),
+                "vision": self.vision,
+                "problem": self.problem(),
             }
         )
 
@@ -70,6 +117,8 @@ class Runtime:
         if model not in self.models:
             return f"{model} is not installed on {self.name}"
         config.MODEL = model
+        self.trouble = ""
+        self._check_sight(model)
         return ""
 
     def handle(self, command: dict, queue: TaskQueue) -> None:
@@ -127,15 +176,15 @@ class _LiveOutput:
             pass  # live output is a nicety; the stored result is what matters
 
 
-def _streams(generate: Callable[..., str]) -> bool:
+def _accepted(generate: Callable[..., str]) -> set[str]:
     try:
-        return "on_chunk" in inspect.signature(generate).parameters
+        return set(inspect.signature(generate).parameters)
     except (TypeError, ValueError):
-        return False
+        return set()
 
 
 def run_task(
-    payload: dict[str, str],
+    payload: dict,
     generate: Callable[..., str],
     live: Callable[[str | None], None] | None = None,
 ) -> tuple[str, dict[str, str]]:
@@ -143,18 +192,33 @@ def run_task(
 
     Returns the result as text, plus extra fields worth keeping with the task.
     """
+    accepted = _accepted(generate)
 
-    def ask(prompt: str, schema: dict | None = None) -> str:
-        if live is None or not _streams(generate):
-            return generate(prompt) if schema is None else generate(prompt, schema)
-        live(None)  # a second attempt replaces the first one's output
-        return generate(prompt, schema, on_chunk=live)
+    def ask_model(prompt: str, schema: dict | None = None, images: list[str] | None = None) -> str:
+        # Pass only what this `generate` takes, so a simple stand-in still works.
+        extra = {}
+        if images:
+            extra["images"] = images
+        if payload.get("ctx") and "context" in accepted:
+            extra["context"] = int(payload["ctx"])
+        if live is not None and "on_chunk" in accepted:
+            live(None)  # a second attempt replaces the first one's output
+            extra["on_chunk"] = live
+        if schema is not None:
+            return generate(prompt, schema, **extra)
+        return generate(prompt, **extra)
 
-    if payload.get("type") == "review":
-        return review.run_detailed(payload, ask)
+    kind = payload.get("type")
+    if kind == "review":
+        return review.run_detailed(payload, ask_model)
+    if kind == "ask":
+        return ask.run(payload, ask_model)
+    if kind == "combine":
+        return ask.run_combine(payload, ask_model)
     if "prompt" not in payload:
         raise TaskError("task has no prompt")
-    return ask(payload["prompt"]), {"prompt": payload["prompt"]}
+    answer = ask_model(payload["prompt"])
+    return answer, {"prompt": payload["prompt"]}
 
 
 def process_one(
@@ -162,17 +226,31 @@ def process_one(
     consumer: str,
     generate: Callable[..., str],
     block_ms: int = 5000,
+    lanes: tuple[str, ...] = ("",),
 ) -> bool:
-    """Handle at most one task. Returns False when none arrived in time."""
-    task = queue.claim(consumer, block_ms=block_ms)
+    """Handle at most one task. Returns False when none arrived in time.
+
+    Raises LaptopProblem, after handing the task back to the queue, when this
+    laptop could not run the model. The task then goes to another laptop.
+    """
+    task = queue.claim(consumer, block_ms=block_ms, lanes=lanes)
     if task is None:
         return False
     live = _LiveOutput(queue, task.task_id)
-    # The model in use when the task started is the one that reviews it.
+    # The model in use when the task started is the one that handles it.
     model = {"model": config.MODEL}
     queue.note(task, **model)
     try:
         result, details = run_task(task.payload, generate, live)
+    except LaptopProblem as exc:
+        live.restart()
+        reason = f"{consumer} could not run it: {exc}"
+        if queue.release(task, reason):
+            name = queue.get(task.task_id).get("name") or "a task"
+            queue.log_event(
+                "handback", f"{consumer} handed {name} back to the queue: {exc}", worker=consumer
+            )
+        raise
     except TaskError as exc:
         live.flush()
         queue.fail(task, str(exc), **exc.details, **model)
@@ -230,20 +308,50 @@ def run_forever(
     reopen: Callable[[], TaskQueue] | None = None,
     should_stop: Callable[[], bool] | None = None,
     block_ms: int = 5000,
+    runtime: Runtime | None = None,
+    cooldown_s: float = COOLDOWN_S,
 ) -> None:
     """Handle tasks until interrupted, or until `should_stop` says so.
 
     After a lost connection, `reopen` is asked for a fresh queue. That lets a
     worker follow a host whose address has changed.
+
+    Given a `runtime`, the laptop only takes work while it can actually run
+    its model. Without that check, a laptop whose model is missing would take
+    file after file and fail each one within a second.
     """
-    while not (should_stop and should_stop()):
+    stopping = should_stop or (lambda: False)
+
+    def pause(seconds: float) -> None:
+        deadline = time.monotonic() + seconds
+        while not stopping() and time.monotonic() < deadline:
+            time.sleep(min(0.2, max(deadline - time.monotonic(), 0)))
+
+    while not stopping():
+        if runtime is not None and not runtime.ready():
+            runtime.refresh_models()
+            if not runtime.ready():
+                pause(3)
+                continue
         try:
-            if process_one(queue, consumer, generate, block_ms=block_ms):
+            lanes = runtime.lanes() if runtime is not None else ("",)
+            if process_one(queue, consumer, generate, block_ms=block_ms, lanes=lanes):
                 print("Handled one task")
+                if runtime is not None:
+                    runtime.trouble = ""
+        except LaptopProblem as exc:
+            print(f"Handed a task back to the queue: {exc}")
+            if runtime is not None:
+                runtime.refresh_models()
+                runtime.trouble = (
+                    f"This laptop could not run its last task ({exc}). The task went back "
+                    "to the queue for another laptop; this one tries again shortly."
+                )
+            pause(cooldown_s)
         except CONNECTION_ERRORS:
             print(f"Lost connection to Redis, retrying in {retry_delay_s:g} seconds")
-            time.sleep(retry_delay_s)
-            if reopen is not None:
+            pause(retry_delay_s)
+            if reopen is not None and not stopping():
                 try:
                     queue = reopen()
                 except (*CONNECTION_ERRORS, discovery.DiscoveryError):
@@ -294,9 +402,12 @@ def main() -> int:
     except CONNECTION_ERRORS as exc:
         print(connection_problem(exc), file=sys.stderr)
         return 1
+    runtime = link.runtime
     print(f"Worker {config.WORKER_NAME} ready, model {config.MODEL}")
+    if not runtime.ready():
+        print(runtime.problem())
     try:
-        run_forever(queue, config.WORKER_NAME, llm.generate, reopen=link.open)
+        run_forever(queue, config.WORKER_NAME, llm.generate, reopen=link.open, runtime=runtime)
     except KeyboardInterrupt:
         link.close()
         print("Worker stopped")

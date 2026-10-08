@@ -181,7 +181,15 @@ details.manual .grid { display: grid; grid-template-columns: 1fr 100px auto; gap
 .tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
 .pane { overflow: auto; padding: 20px; display: grid; gap: 16px; align-content: start; }
 
-.newreview { display: flex; gap: 8px; }
+.newjob { display: grid; gap: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+.newjob.hidden { display: none; }
+.kinds { display: flex; gap: 6px; flex-wrap: wrap; }
+textarea.field { resize: vertical; min-height: 44px; font-family: var(--sans); line-height: 1.45; }
+.question { max-width: 90ch; overflow-wrap: anywhere; }
+.sans { font-family: var(--sans); }
+.answer { background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0; padding: 14px 16px; display: grid; gap: 10px; }
+.answer h3 { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.prose { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 90ch; line-height: 1.55; }
 .jobhead { display: grid; gap: 10px; }
 .jobhead .source { font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; }
 .bar { height: 6px; background: var(--sunken); border-radius: 3px; overflow: hidden; display: flex; }

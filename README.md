@@ -47,20 +47,30 @@ Built:
 - A dashboard app on every laptop: host or join from a list, start and cancel reviews, and watch each laptop's current file.
 - Full transparency per file: the model's reply streamed live, the parsed findings, the raw reply, the exact prompt, and a timeline of what happened to it.
 - Interchangeable models: each laptop reports the models it has installed, its owner or the host can switch between them, and every file records which model and laptop reviewed it.
-- An activity feed and a history of reviews with their times and laptops.
+- An activity feed and a history of jobs with their times and laptops, which the host can clear.
+- Four kinds of job, not only code review:
+  - **Review code**: defects in every source file.
+  - **Ask about files**: one question put to every file in a folder (code, documents, PDFs, pictures), with the per-file answers then pieced into one answer.
+  - **Prompt**: a single question, answered by whichever laptop is free.
+  - **Write code**: a request, answered with complete code.
+- Long files are split into overlapping parts instead of being skipped, each part numbered as in the whole file, and a finding reported by two overlapping parts is listed once.
+- Pictures stay with their text: a document is sent together with the figures it refers to, a PDF with its page images, and a standalone picture with the passage that mentions it.
+- Work with pictures goes only to laptops whose model can see. The dashboard says so when none is connected.
+- A laptop that cannot run its model (Ollama stopped, model not installed, out of memory) hands its task back to the queue for another laptop and stops taking work until it is fixed, instead of failing file after file. Failed tasks can be run again from the dashboard.
+- The app remembers its connection, so restarting it puts the laptop back in its cluster.
 
 Planned:
 
 - A run across all four laptops.
-- Routing large files only to laptops whose model can fit them.
 - Cross-checking high-severity findings on a second laptop and model.
+- Reading scanned PDFs, which have no text to extract.
 - A benchmark comparing one laptop against the full cluster.
 
 ## Innovation and Differentiation
 
 Existing tools for pooling machines, such as exo, Petals and llama.cpp's RPC mode, split one large model across devices. LapClusters does the opposite: each laptop runs a complete small model, and the cluster distributes independent tasks between them. That keeps every laptop useful on its own, tolerates a laptop leaving mid-job, and needs nothing more than a network connection to Redis.
 
-Work is split by a fixed rule (one task per file) and not by asking the model to plan, because small models are reliable at narrow tasks and unreliable at decomposing large ones.
+Work is split by a fixed rule (one task per file, or per part of a long file) and not by asking the model to plan, because small models are reliable at narrow tasks and unreliable at decomposing large ones.
 
 ## Technical Implementation
 
@@ -88,7 +98,7 @@ flowchart LR
 | Category        | Technologies                                             |
 | --------------- | -------------------------------------------------------- |
 | Frontend        | Hand-written HTML, CSS and JavaScript, no build step     |
-| Backend         | Python 3.11+, FastAPI, uvicorn, redis-py, httpx, python-dotenv |
+| Backend         | Python 3.11+, FastAPI, uvicorn, redis-py, httpx, python-dotenv, pypdf, Pillow |
 | Database        | Redis 7 (Streams, consumer groups, hashes, sets)         |
 | AI / ML         | Gemma 4 E4B (`gemma4:e4b`) served locally by Ollama      |
 | Infrastructure  | Docker (runs Redis), Git (clones repositories), pytest   |
@@ -100,7 +110,8 @@ If a category or technology is not implemented in the project, specify `N/A` ins
 ### How It Works
 
 - `lapclusters/taskqueue.py` is the only module that talks to Redis. Adding a task writes a status record (`task:{id}`), registers the task under its job (`job:{id}`) and appends it to the `tasks` stream, all in one transaction.
-- `lapclusters/repo.py` turns a folder or git URL into a list of source files. A URL is cloned into a temporary folder on the host laptop, which is deleted once the files are read. Dependency folders, non-source files and files over 20 KB are left out.
+- `lapclusters/repo.py` turns a folder or git URL into tasks. A URL is cloned into a temporary folder on the host laptop, which is deleted once the files are read. Dependency folders are left out, long files are split into overlapping parts, PDFs have their text and pictures extracted, and pictures are shrunk and attached to the text that refers to them.
+- `lapclusters/ask.py` holds the prompts for asking a question of one file and for piecing many answers into one. When the answers do not fit in a single request they are condensed in groups first, for as many rounds as it takes.
 - `lapclusters/orchestrator.py` queues one review task per file, with the file's content inside the task, waits for all of them, and writes the report.
 - `lapclusters/review.py` builds the review prompt (with numbered lines) and cleans up the model's JSON reply.
 - `lapclusters/worker.py` runs a loop: claim one task through the `workers` consumer group, run it on the model, store the result, acknowledge the task. A background thread refreshes the worker's heartbeat every 5 seconds.
@@ -119,7 +130,10 @@ If a category or technology is not implemented in the project, specify `N/A` ins
 - **Takeover is based on heartbeats, not elapsed time.** A task is only taken from a worker whose heartbeat has expired, so a slow laptop that is still working is never interrupted.
 - **The model's output is constrained to a JSON schema** through Ollama's structured output, because free-text replies from a small model are not reliably parseable.
 - **The Redis read timeout (60 s) is set above the worker's wait (5 s).** The client library's default timeout equals the wait, which made an idle worker crash.
-- **Model context raised to 8192 tokens**, because Ollama's 4096 default is too small for source files.
+- **Model context set to 32768 tokens**, because Ollama's 4096 default is too small for source files. The host's value travels with each task so every laptop reads the same amount.
+- **A laptop problem is not a task failure.** When Ollama is down or a model is missing, the task goes back to the queue and the laptop pauses, so one misconfigured laptop cannot fail a whole job.
+- **Each task's data is stored beside the queue, not in it**, so a task can be queued again (after a hand-back or a retry) without copying its file.
+- **The queue is versioned.** A laptop running an older version reads an older queue and so receives nothing, instead of mishandling tasks it does not understand.
 
 ## Implementation During the Hackathon
 
@@ -198,7 +212,11 @@ OLLAMA_URL=http://localhost:11434
 MODEL=gemma4:e4b
 WORKER_NAME=
 MODEL_TIMEOUT_S=600
+MODEL_CONTEXT=32768
+PART_CHARS=48000
 ```
+
+`MODEL_CONTEXT` is how many tokens the model may read and write per request. The default of 32768 was measured to fit Gemma 4 E4B entirely on an 8 GB graphics card (an RTX 4060 laptop GPU, about 5.1 GB in use). The host's value is sent with every task, so the whole cluster uses the same. Lower it, together with `PART_CHARS`, if the laptops are weaker.
 
 ### Running the Project
 
@@ -216,8 +234,8 @@ On the Connect screen, enter the cluster password (the Redis password) and choos
 The app runs that laptop's worker itself, so no second terminal is needed. From then on:
 
 - The **Laptops** column shows every laptop, the file it is on, and its model. Change your own laptop's model from its card; the host can change anyone's. A change applies from the laptop's next file.
-- On the host, paste a folder or git URL into **Review** and press Start. Each file is a row; click one to watch the model's reply as it is written, then see its findings, the raw reply, the exact prompt and a timeline.
-- **Report** lists every finding with filters and a download. **History** keeps each review's time and laptops for comparison. **Activity** records joins, departures, takeovers and model changes.
+- On the host, the **Work** tab starts a job: choose Review code, Ask about files, Prompt or Write code, fill in the folder or git URL and the question as needed, and press Start. Each task is a row; click one to watch the model's reply as it is written, then see its result, the raw reply, the exact prompt and a timeline.
+- **Results** shows a review's findings with filters, or a question's combined answer with what each file contributed. Both can be downloaded. **History** keeps each job's time and laptops for comparison. **Activity** records joins, departures, takeovers, hand-backs and model changes.
 
 The app listens on `127.0.0.1` only. Laptops never talk to each other's app; they share state through Redis.
 
@@ -239,10 +257,12 @@ python -m lapclusters.orchestrator tests/fixtures/sample_repo
 
 Progress is printed as files finish, and the report is written to `review-report.md` (change it with `--output`). The bundled sample repository contains deliberate bugs to try it on. The first request is slower because Ollama has to load the model.
 
-To send a single prompt instead:
+The same command runs the other kinds of job:
 
 ```bash
-python -m lapclusters.cli "Explain what a task queue is in one sentence."
+python -m lapclusters.orchestrator docs --ask "What does each document recommend?"
+python -m lapclusters.orchestrator --prompt "Explain what a task queue is in one sentence."
+python -m lapclusters.orchestrator --code "A Python function that parses an ISO date"
 ```
 
 ### Adding More Laptops
@@ -274,8 +294,10 @@ To watch tasks move through Redis, and for what each teammate builds next, see [
 - Run across two laptops so far, not yet four.
 - Automatic discovery needs a network that allows broadcasts between devices, such as a phone hotspot. Some campus and office networks do not.
 - Automatic discovery trusts whoever answers. On a network you do not control, another device could pose as a host and receive the Redis password a worker sends it, so use a fixed address or a private network such as Tailscale there.
-- Source files over 20 KB are listed as not reviewed, because they do not fit in the model's context.
-- Each file is reviewed in isolation, so problems that span several files are not found.
+- Each file, or part of a long file, is examined on its own, so a defect that spans two files or two distant parts of one file is not found.
+- The final answer to a question is written by a small model from the per-file notes. It can blur a detail, so the notes it was written from are always shown beside it.
+- Scanned PDFs have no text to extract and are listed as left out.
+- Every laptop must run the same version. A laptop on an older version is shown as needing an update and is given no work.
 - The model sometimes reports problems that are not real. Treat the report as leads to check.
 - A dead worker's task is taken over by the next worker that becomes free, so the handover can take as long as that worker's current file.
 

@@ -13,3 +13,6 @@ __pycache__/
 
 # Generated review reports
 review-report.md
+
+# The app's memory of its last connection (holds the cluster password)
+.lapclusters.json

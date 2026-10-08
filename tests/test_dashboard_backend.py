@@ -133,6 +133,14 @@ class _Stream:
     def __exit__(self, *exc):
         return False
 
+    is_stream_consumed = True
+
+    def read(self):
+        return b""
+
+    def json(self):
+        return {}
+
     def raise_for_status(self):
         if self.status_code >= 400:
             raise httpx.HTTPStatusError("bad", request=self.request, response=self)
@@ -172,7 +180,7 @@ def test_streaming_retry_tells_the_listener_to_start_over(monkeypatch):
 def test_streaming_reports_an_error_sent_inside_the_stream(monkeypatch):
     lines = [json.dumps({"error": "model ran out of memory"})]
     monkeypatch.setattr(llm.httpx, "stream", lambda *a, **k: _Stream(lines))
-    with pytest.raises(llm.ModelError, match="out of memory"):
+    with pytest.raises(llm.LaptopProblem, match="out of memory"):
         llm.generate("hi", on_chunk=lambda piece: None)
 
 
@@ -256,6 +264,7 @@ def test_second_attempt_replaces_the_first_attempts_live_output(queue):
 @pytest.fixture
 def installed(monkeypatch):
     monkeypatch.setattr(llm, "list_models", lambda timeout=5.0: ["model-a", "model-b"])
+    monkeypatch.setattr(llm, "can_see", lambda model, timeout=5.0: model == "model-b")
     monkeypatch.setattr(config, "MODEL", "model-a")
 
 

@@ -3,8 +3,10 @@ host, the announcer and the watcher that records who joins and leaves."""
 
 from __future__ import annotations
 
+import json
 import threading
 import time
+from pathlib import Path
 from typing import Callable
 from urllib.parse import quote, urlsplit
 
@@ -12,6 +14,7 @@ import redis
 
 from lapclusters import config, discovery, llm
 from lapclusters.app import views
+from lapclusters.orchestrator import advance
 from lapclusters.taskqueue import CONNECTION_ERRORS, TaskQueue, connect, connection_problem
 from lapclusters.worker import Link, Runtime, run_forever
 
@@ -41,7 +44,12 @@ class Node:
         generate: Callable[..., str] = llm.generate,
         announce: bool = True,
         run_worker: bool = True,
+        memory: Path | None = None,
     ):
+        # Where the last connection is remembered, so restarting the app puts
+        # this laptop back where it was. None means do not remember.
+        self.memory = memory
+        self.restore_problem = ""
         self.db = db
         self.generate = generate
         self.announce = announce
@@ -94,6 +102,7 @@ class Node:
             self._watch_stop = threading.Event()
             threading.Thread(target=self._watch, args=(self._watch_stop,), daemon=True).start()
             queue.log_event("cluster", f"{self.name} is hosting the cluster", worker=self.name)
+            self._remember({"role": HOST, "password": password, "port": port})
             if self.run_worker:
                 self.start_worker()
 
@@ -123,8 +132,54 @@ class Node:
             self.role = MEMBER
             self.host = {"name": name or address, "address": address, "port": port}
             self._queue = queue
+            self._remember(
+                {"role": MEMBER, "password": password, "name": name, "address": address,
+                 "port": port, "follow": follow}
+            )
             if self.run_worker:
                 self.start_worker()
+
+    def _remember(self, connection: dict | None) -> None:
+        if self.memory is None:
+            return
+        try:
+            if connection is None:
+                self.memory.unlink(missing_ok=True)
+            else:
+                self.memory.write_text(json.dumps(connection), encoding="utf-8")
+        except OSError:
+            pass  # remembering is a convenience; connecting still worked
+
+    def restore(self) -> None:
+        """Reconnect the way this laptop was connected when the app last ran."""
+        if self.memory is None or self.role is not None:
+            return
+        try:
+            saved = json.loads(self.memory.read_text(encoding="utf-8"))
+            password = str(saved.get("password", ""))
+            port = int(saved.get("port", 6379))
+            if saved.get("role") == HOST:
+                self.connect_host(password, port)
+            elif saved.get("role") == MEMBER:
+                name, address = str(saved.get("name", "")), str(saved.get("address", ""))
+                if saved.get("follow", True) and name:
+                    # The host's address may have changed since; look it up by name.
+                    found = [h for h in discovery.find_hosts() if h.name.lower() == name.lower()]
+                    if found:
+                        address, port = found[0].address, found[0].redis_port
+                self.connect_member(password, name, address, port, follow=saved.get("follow", True))
+        except FileNotFoundError:
+            return
+        except ConnectError as exc:
+            self.restore_problem = f"Could not reconnect to the cluster used last time. {exc}"
+        except (OSError, ValueError, TypeError, AttributeError):
+            self.restore_problem = ""  # an unreadable memory file is simply ignored
+
+    def leave(self) -> None:
+        """Disconnect on purpose, and do not reconnect at the next start."""
+        self.disconnect()
+        self._remember(None)
+        self.restore_problem = ""
 
     def disconnect(self) -> None:
         with self._lock:
@@ -249,6 +304,7 @@ class Node:
                     reopen=link.open,
                     should_stop=stop.is_set,
                     block_ms=2000,
+                    runtime=self.runtime,
                 )
         except Exception as exc:  # a bug here must be visible, not a silent dead thread
             self.worker_note = f"The worker stopped unexpectedly: {type(exc).__name__}: {exc}"
@@ -287,7 +343,8 @@ class Node:
                     for name in sorted(known - names):
                         queue.log_event("leave", f"{name} left the cluster", worker=name)
                 known = names
-                for job_id in queue.recent_jobs(1):
+                for job_id in queue.recent_jobs(3):
+                    advance(queue, job_id)  # combine the answers once every file is done
                     views.job_view(queue, job_id, close=True, with_tasks=False)
             except CONNECTION_ERRORS:
                 self.lost_connection()

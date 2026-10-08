@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from lapclusters.repo import MAX_FILE_BYTES, RepoError, collect_files, open_repo
+from lapclusters.repo import RepoError, collect_files, open_repo
 
 
 def _write(root: Path, relative: str, content: str | bytes) -> None:
@@ -42,11 +42,56 @@ def test_ignores_empty_files(tmp_path):
     assert collect_files(tmp_path).files == []
 
 
-def test_reports_oversized_files_as_skipped(tmp_path):
-    _write(tmp_path, "big.py", "x = 1\n" * (MAX_FILE_BYTES // 6 + 10))
+def test_a_long_file_is_split_into_overlapping_parts_instead_of_skipped(tmp_path):
+    lines = [f"value_{n} = {n}" for n in range(1, 401)]
+    _write(tmp_path, "big.py", "\n".join(lines) + "\n")
+    collected = collect_files(tmp_path, part_chars=2000)
+    parts = collected.files
+    assert collected.skipped == []
+    assert len(parts) > 2
+    assert all(p.path == "big.py" for p in parts)
+    assert parts[0].first_line == 1 and parts[0].part.startswith("lines 1-")
+    assert parts[0].name == f"big.py ({parts[0].part})"
+    # Every line of the file is in some part, and the numbering is the file's own.
+    covered = set()
+    for part in parts:
+        first, last = (int(n) for n in part.part.removeprefix("lines ").split("-"))
+        assert part.first_line == first
+        assert part.content.splitlines()[0] == lines[first - 1]
+        assert part.content.splitlines()[-1] == lines[last - 1]
+        assert len(part.content) <= 2000
+        covered.update(range(first, last + 1))
+    assert covered == set(range(1, 401))
+    # Neighbouring parts share a few lines.
+    second_first = int(parts[1].part.removeprefix("lines ").split("-")[0])
+    first_last = int(parts[0].part.removeprefix("lines ").split("-")[1])
+    assert second_first <= first_last
+
+
+def test_a_short_file_is_one_task_with_no_part_label(tmp_path):
+    _write(tmp_path, "small.py", "x = 1\n")
+    (only,) = collect_files(tmp_path, part_chars=2000).files
+    assert (only.part, only.first_line, only.name) == ("", 1, "small.py")
+
+
+def test_a_single_enormous_line_is_cut_up(tmp_path):
+    from lapclusters.repo import split_text
+
+    parts = split_text("a" * 5000, 1000)
+    assert [len(text) for _, _, text in parts] == [1000] * 5
+    assert all((first, last) == (1, 1) for first, last, _ in parts)
+    assert split_text("", 1000) == []
+    assert split_text("\n\n", 1000) == [(1, 2, "\n")]
+
+
+def test_only_truly_huge_files_are_skipped(tmp_path, monkeypatch):
+    from lapclusters import repo
+
+    monkeypatch.setattr(repo, "MAX_TEXT_BYTES", 50)
+    _write(tmp_path, "huge.py", "x = 1\n" * 100)
     collected = collect_files(tmp_path)
     assert collected.files == []
-    assert collected.skipped == [("big.py", "larger than 20 KB")]
+    assert collected.skipped == [("huge.py", "larger than 0 MB")]
 
 
 def test_reports_non_text_source_files_as_skipped(tmp_path):

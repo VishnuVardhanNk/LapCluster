@@ -41,6 +41,7 @@ def make_app(queue, monkeypatch):
     monkeypatch.setattr(config, "CLUSTER_HOST", config.CLUSTER_HOST)
     monkeypatch.setattr(config, "MODEL", "model-a")
     monkeypatch.setattr(llm, "list_models", lambda timeout=5.0: ["model-a", "model-b"])
+    monkeypatch.setattr(llm, "can_see", lambda model, timeout=5.0: True)
     nodes = []
 
     def build(run_worker=True):
@@ -182,7 +183,7 @@ def test_a_finished_review_is_announced_once_and_summarised(make_app):
     state = client.get("/api/state").json()
     announcements = [e for e in state["events"] if "finished" in e["text"]]
     assert len(announcements) == 1
-    assert "3 of 3 files" in announcements[0]["text"]
+    assert "3 of 3 tasks" in announcements[0]["text"]
     assert state["jobs"][0]["status"] == "done"
     assert state["jobs"][0]["laptops"] == {node.name: 3}
 
@@ -343,3 +344,182 @@ def test_a_member_cannot_switch_another_laptops_model(make_app, queue):
     queue.heartbeat("other-pc", '{"model": "model-a", "models": ["model-a", "model-b"]}')
     reply = client.post("/api/model", json={"worker": "other-pc", "model": "model-b"})
     assert reply.status_code == 403
+
+
+# --- other kinds of job, retry, history, memory ----------------------------
+
+
+def kinds_model(prompt, schema=None, on_chunk=None, images=None, context=None):
+    if schema is not None:
+        return FINDINGS
+    if "Several files were each examined" in prompt:
+        return "COMBINED"
+    if "careful programmer" in prompt:
+        return "CODE"
+    return "ANSWER"
+
+
+def start(client, **body):
+    reply = client.post("/api/reviews", json=body)
+    assert reply.status_code == 200, reply.text
+    return reply.json()["job"]
+
+
+def test_a_prompt_job_returns_its_answer(make_app):
+    client, node = make_app()
+    node.generate = kinds_model
+    host(client)
+    job_id = start(client, kind="prompt", question="What is a queue?")
+    job = finished_job(client)
+    assert (job["id"], job["kind"], job["status"], job["answer"]) == (job_id, "prompt", "done", "ANSWER")
+    assert job["question"] == "What is a queue?"
+    assert client.get(f"/api/tasks/{job['answer_task']}").json()["type"] == "prompt"
+    report = client.get(f"/api/reviews/{job_id}/report.md").text
+    assert "## Answer\n\nANSWER" in report and "- Question: What is a queue?" in report
+
+
+def test_a_code_job_wraps_the_request(make_app):
+    client, node = make_app()
+    node.generate = kinds_model
+    host(client)
+    start(client, kind="code", question="Reverse a string")
+    assert finished_job(client)["answer"] == "CODE"
+
+
+def test_a_question_about_files_is_combined_by_the_host(make_app):
+    client, node = make_app()
+    node.generate = kinds_model
+    host(client)
+    start(client, kind="ask", source=SAMPLE_REPO, question="What does this do?")
+    job = finished_job(client)
+    assert (job["kind"], job["status"], job["answer"]) == ("ask", "done", "COMBINED")
+    assert [t["name"] for t in job["tasks"]][-1] == "Combined answer"
+    assert job["total"] == 5  # three source files, notes.txt, and the combining step
+    notes = client.get(f"/api/reviews/{job['id']}/findings").json()["notes"]
+    assert len(notes) == 4 and notes[0]["text"] == "ANSWER"
+
+
+def test_job_requests_are_validated(make_app):
+    client, _ = make_app(run_worker=False)
+    host(client)
+
+    def problem(**body):
+        reply = client.post("/api/reviews", json=body)
+        assert reply.status_code == 400
+        return reply.json()["error"]
+
+    assert problem(kind="prompt", question="  ") == "Type what you want to ask."
+    assert problem(kind="code") == "Type what you want to ask."
+    assert problem(kind="ask", question="Q?") == "Enter a folder or a git URL."
+    assert problem(kind="nonsense", source="x") == "Unknown kind of job."
+    # A question about files has a sensible default.
+    job_id = start(client, kind="ask", source=SAMPLE_REPO)
+    wait_for(lambda: client.get("/api/state").json()["job"]["total"] == 4)
+    assert client.get("/api/state").json()["job"]["question"] == "Summarise what this file contains."
+    client.post(f"/api/reviews/{job_id}/cancel")
+
+
+def test_failed_tasks_can_be_run_again(make_app):
+    client, node = make_app()
+    broken = {"on": True}
+
+    def model(prompt, schema=None, on_chunk=None):
+        if broken["on"] and "users.py" in prompt:
+            raise RuntimeError("boom")
+        return FINDINGS
+
+    node.generate = model
+    host(client)
+    job_id = start(client, source=SAMPLE_REPO)
+    job = finished_job(client)
+    assert (job["done"], job["failed"], job["status"]) == (2, 1, "done")
+
+    broken["on"] = False
+    assert client.post(f"/api/reviews/{job_id}/retry").json() == {"ok": True, "retried": 1}
+    job = wait_for(lambda: (j := client.get("/api/state").json()["job"])["done"] == 3 and j)
+    assert (job["failed"], job["status"]) == (0, "done")
+    assert client.post("/api/reviews/nope/retry").status_code == 404
+
+
+def test_clearing_history_keeps_a_job_that_is_still_running(make_app):
+    client, _ = make_app()
+    host(client)
+    start(client, source=SAMPLE_REPO)
+    finished_job(client)
+    client.post("/api/worker", json={"action": "stop"})
+    wait_for(lambda: client.get("/api/state").json()["worker"]["state"] == "stopped")
+    running = start(client, source=SAMPLE_REPO)
+    wait_for(lambda: client.get("/api/state").json()["job"]["total"] == 3)
+    assert len(client.get("/api/state").json()["jobs"]) == 2
+    assert client.post("/api/history/clear").json() == {"ok": True, "deleted": 1}
+    assert [j["id"] for j in client.get("/api/state").json()["jobs"]] == [running]
+    client.post(f"/api/reviews/{running}/cancel")
+
+
+def test_members_cannot_retry_or_clear(make_app):
+    client, _ = make_app(run_worker=False)
+    client.post(
+        "/api/connect",
+        json={"role": "member", "password": PASSWORD, "name": "SomeHost",
+              "address": "localhost", "port": PORT, "follow": False},
+    )
+    assert client.post("/api/reviews/x/retry").status_code == 403
+    assert client.post("/api/history/clear").status_code == 403
+    assert client.post("/api/reviews", json={"kind": "prompt", "question": "hi"}).status_code == 403
+
+
+def test_the_last_connection_is_remembered_until_the_user_leaves(queue, monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "REDIS_URL", config.REDIS_URL)
+    monkeypatch.setattr(config, "CLUSTER_HOST", config.CLUSTER_HOST)
+    monkeypatch.setattr(llm, "list_models", lambda timeout=5.0: ["model-a"])
+    monkeypatch.setattr(llm, "can_see", lambda model, timeout=5.0: False)
+    memory = tmp_path / "memory.json"
+
+    first = Node(db=15, announce=False, run_worker=False, memory=memory)
+    first.connect_host(PASSWORD, PORT)
+    assert memory.exists()
+    first.disconnect()  # as when the app is closed; the memory stays
+
+    second = Node(db=15, announce=False, run_worker=False, memory=memory)
+    second.restore()
+    assert (second.role, second.restore_problem) == ("host", "")
+    second.leave()  # the user chose Leave; do not come back next time
+    assert not memory.exists()
+
+    third = Node(db=15, announce=False, run_worker=False, memory=memory)
+    third.restore()
+    assert third.role is None
+
+
+def test_a_stale_memory_reports_why_it_could_not_reconnect(queue, monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "REDIS_URL", config.REDIS_URL)
+    monkeypatch.setattr(llm, "list_models", lambda timeout=5.0: ["model-a"])
+    monkeypatch.setattr(llm, "can_see", lambda model, timeout=5.0: False)
+    memory = tmp_path / "memory.json"
+    memory.write_text('{"role": "host", "password": "", "port": 1}', encoding="utf-8")
+    node = Node(db=15, announce=False, run_worker=False, memory=memory)
+    node.restore()
+    assert node.role is None
+    assert node.restore_problem.startswith("Could not reconnect to the cluster used last time.")
+    memory.write_text("not json", encoding="utf-8")
+    node.restore_problem = ""
+    node.restore()
+    assert (node.role, node.restore_problem) == (None, "")
+
+
+def test_a_laptop_whose_model_is_missing_shows_why_and_takes_nothing(make_app, monkeypatch):
+    client, node = make_app()
+    monkeypatch.setattr(config, "MODEL", "model-missing")
+    host(client)
+    start(client, source=SAMPLE_REPO)
+    state = wait_for(
+        lambda: (s := client.get("/api/state").json())["worker"]["note"]
+        and node.name in s["workers"] and s["job"] and s["job"]["total"] == 3 and s
+    )
+    assert "model-missing is not installed on this laptop" in state["worker"]["note"]
+    assert (state["job"]["failed"], state["job"]["pending"]) == (0, 3)  # nothing burned
+    assert state["workers"][node.name]["ready"] is False
+    # Choosing an installed model is all it takes.
+    client.post("/api/model", json={"worker": node.name, "model": "model-a"})
+    job = finished_job(client)
+    assert (job["done"], job["failed"]) == (3, 0)

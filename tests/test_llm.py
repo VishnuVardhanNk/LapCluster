@@ -1,7 +1,7 @@
 import httpx
 import pytest
 
-from lapclusters import llm
+from lapclusters import config, llm
 
 
 def _reply(status: int, body: dict | None = None) -> httpx.Response:
@@ -34,7 +34,16 @@ def test_returns_the_models_reply_and_passes_the_schema(replies):
     assert llm.generate("hi", schema) == "hello"
     assert sent[0]["prompt"] == "hi"
     assert sent[0]["format"] == schema
-    assert sent[0]["options"]["num_ctx"] == llm.CONTEXT_TOKENS
+    assert sent[0]["options"]["num_ctx"] == config.MODEL_CONTEXT
+    assert "images" not in sent[0]
+
+
+def test_passes_pictures_and_a_context_size_when_given(replies):
+    script, sent = replies
+    script.append(_reply(200, {"response": "a cat"}))
+    assert llm.generate("what is this", images=["QUJD"], context=4096) == "a cat"
+    assert sent[0]["images"] == ["QUJD"]
+    assert sent[0]["options"]["num_ctx"] == 4096
 
 
 def test_retries_once_when_the_model_server_has_a_hiccup(replies):
@@ -51,26 +60,36 @@ def test_retries_once_when_the_model_server_is_briefly_unreachable(replies):
     assert llm.generate("hi") == "ok"
 
 
-def test_gives_up_after_the_second_failure(replies):
+def test_gives_up_after_the_second_failure_with_ollamas_own_reason(replies, monkeypatch):
+    monkeypatch.setattr(config, "MODEL", "model-a")
     script, sent = replies
-    script += [_reply(500), _reply(500)]
-    with pytest.raises(httpx.HTTPStatusError):
+    script += [_reply(500), _reply(500, {"error": "CUDA out of memory"})]
+    with pytest.raises(llm.LaptopProblem, match=r"Ollama could not run model-a \(CUDA out of memory\)"):
         llm.generate("hi")
     assert len(sent) == 2
 
 
-def test_does_not_retry_a_request_the_server_rejects(replies):
+def test_a_missing_model_is_named_and_not_retried(replies, monkeypatch):
     # 404 means the model is not installed; asking again will not help.
+    monkeypatch.setattr(config, "MODEL", "model-a")
     script, sent = replies
-    script.append(_reply(404))
-    with pytest.raises(httpx.HTTPStatusError):
+    script.append(_reply(404, {"error": "model 'model-a' not found"}))
+    with pytest.raises(llm.LaptopProblem, match="the model model-a is not installed in Ollama"):
         llm.generate("hi")
     assert len(sent) == 1
 
 
-def test_does_not_retry_after_waiting_out_the_full_timeout(replies):
+def test_a_timeout_is_explained_and_not_retried(replies, monkeypatch):
+    monkeypatch.setattr(config, "MODEL", "model-a")
     script, sent = replies
     script.append(httpx.ReadTimeout("too slow"))
-    with pytest.raises(httpx.ReadTimeout):
-        llm.generate("hi")
+    with pytest.raises(llm.LaptopProblem, match="model-a did not answer within 30 seconds"):
+        llm.generate("hi", timeout=30)
     assert len(sent) == 1
+
+
+def test_ollama_not_running_is_said_plainly(replies):
+    script, sent = replies
+    script += [httpx.ConnectError("refused"), httpx.ConnectError("refused")]
+    with pytest.raises(llm.LaptopProblem, match="Ollama is not running"):
+        llm.generate("hi")

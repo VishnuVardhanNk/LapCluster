@@ -21,6 +21,10 @@ CONNECTION_ERRORS = (redis.ConnectionError, redis.TimeoutError)
 WORKER_TTL_S = 15
 # A task is given up on once this many workers in a row have died holding it.
 MAX_DELIVERIES = 3
+# A task handed back this many times by laptops that could not run it is failed.
+MAX_ATTEMPTS = 4
+# Separate queues for work only some laptops can do. "" is the ordinary one.
+LANES = ("", "vision")
 # How long a task's live output is kept after the last piece was written.
 OUTPUT_TTL_S = 3600
 EVENTS_KEPT = 500
@@ -61,13 +65,18 @@ class Task:
     payload: dict[str, str]
     # Name of the dead worker this task was taken over from, if any.
     taken_from: str = ""
+    # Which queue it came from; see LANES.
+    lane: str = ""
 
 
 class TaskQueue:
     def __init__(
         self,
         client: redis.Redis,
-        stream: str = "tasks",
+        # Not "tasks", which earlier versions read: a laptop still running one
+        # would take new-style tasks it cannot handle. On its own stream it
+        # simply receives nothing until it is updated.
+        stream: str = "work",
         group: str = "workers",
         reclaim_idle_ms: int = 10_000,
     ):
@@ -79,6 +88,9 @@ class TaskQueue:
 
     def _task_key(self, task_id: str) -> str:
         return f"task:{task_id}"
+
+    def _payload_key(self, task_id: str) -> str:
+        return f"payload:{task_id}"
 
     def _job_key(self, job_id: str) -> str:
         return f"job:{job_id}"
@@ -95,6 +107,12 @@ class TaskQueue:
     def _control_key(self, worker: str) -> str:
         return f"control:{worker}"
 
+    def _stream(self, lane: str) -> str:
+        return f"{self.stream}:{lane}" if lane else self.stream
+
+    def _lane_of(self, stream: str) -> str:
+        return stream[len(self.stream) + 1:] if stream != self.stream else ""
+
     def now(self) -> float:
         """The Redis server's clock, so every laptop stamps times the same way."""
         seconds, microseconds = self.client.time()
@@ -104,45 +122,64 @@ class TaskQueue:
         return f"{self.now():.3f}"
 
     def ensure_group(self) -> None:
-        try:
-            self.client.xgroup_create(self.stream, self.group, id="0", mkstream=True)
-        except redis.ResponseError as exc:
-            if "BUSYGROUP" not in str(exc):
-                raise
+        for lane in LANES:
+            try:
+                self.client.xgroup_create(self._stream(lane), self.group, id="0", mkstream=True)
+            except redis.ResponseError as exc:
+                if "BUSYGROUP" not in str(exc):
+                    raise
 
     # --- tasks -----------------------------------------------------------
 
-    def add_task(self, job_id: str, payload: dict[str, str], name: str = "") -> str:
-        """Queue a task. `name` is a short label shown in reports and the dashboard."""
+    def add_task(
+        self,
+        job_id: str,
+        payload: dict[str, str],
+        name: str = "",
+        lane: str = "",
+        **fields: str,
+    ) -> str:
+        """Queue a task.
+
+        `name` is a short label shown in reports and the dashboard. `lane`
+        restricts it to laptops that can do that kind of work. `fields` are
+        stored with the task's status for display.
+        """
         task_id = uuid.uuid4().hex
-        queued_at = self._stamp()
-        # One transaction, so a worker never sees a task without its status record.
+        record = {
+            **fields,
+            "status": PENDING,
+            "job_id": job_id,
+            "name": name,
+            "lane": lane,
+            "attempts": "0",
+            "queued_at": self._stamp(),
+        }
+        # One transaction, so a worker never sees a task without its records.
         with self.client.pipeline() as pipe:
-            pipe.hset(
-                self._task_key(task_id),
-                mapping={
-                    "status": PENDING,
-                    "job_id": job_id,
-                    "name": name,
-                    "queued_at": queued_at,
-                },
-            )
+            pipe.hset(self._task_key(task_id), mapping=record)
+            pipe.set(self._payload_key(task_id), json.dumps(payload))
             pipe.sadd(self._job_key(job_id), task_id)
-            pipe.xadd(
-                self.stream,
-                {"task_id": task_id, "job_id": job_id, "payload": json.dumps(payload)},
-            )
+            pipe.xadd(self._stream(lane), {"task_id": task_id, "job_id": job_id})
             pipe.execute()
         return task_id
 
-    def claim(self, consumer: str, block_ms: int = 5000) -> Task | None:
-        """Take the next task: first one a dead worker left behind, else a new one."""
+    def claim(
+        self, consumer: str, block_ms: int = 5000, lanes: tuple[str, ...] | list[str] = ("",)
+    ) -> Task | None:
+        """Take the next task: first one a dead worker left behind, else a new one.
+
+        Only the given lanes are looked at, so a laptop is never handed work it
+        cannot do.
+        """
         try:
-            task = self._reclaim_abandoned(consumer) or self._read_new(consumer, block_ms)
+            task = self._reclaim_abandoned(consumer, lanes) or self._read_new(
+                consumer, block_ms, lanes
+            )
         except redis.ResponseError as exc:
             if "NOGROUP" not in str(exc):
                 raise
-            # Redis was restarted and lost the stream; recreate it and carry on.
+            # Redis was restarted and lost the streams; recreate them and carry on.
             self.ensure_group()
             return None
         if task is None:
@@ -160,50 +197,79 @@ class TaskQueue:
             )
         return task
 
-    def _read_new(self, consumer: str, block_ms: int) -> Task | None:
+    def _read_new(self, consumer: str, block_ms: int, lanes) -> Task | None:
+        streams = {self._stream(lane): ">" for lane in lanes}
         while True:
             response = self.client.xreadgroup(
-                self.group, consumer, {self.stream: ">"}, count=1, block=block_ms
+                self.group, consumer, streams, count=1, block=block_ms
             )
             if not response:
                 return None
-            task = self._to_task(*response[0][1][0])
-            if self.client.hget(self._task_key(task.task_id), "status") not in FINISHED:
+            stream, entries = response[0]
+            # Reading several lanes at once can deliver one entry from each.
+            # A worker does one task at a time, so put the others straight back
+            # for whichever laptop is free.
+            for other_stream, other_entries in response[1:]:
+                for entry_id, fields in other_entries:
+                    with self.client.pipeline() as pipe:
+                        pipe.xadd(other_stream, {k: fields[k] for k in ("task_id", "job_id")})
+                        pipe.xack(other_stream, self.group, entry_id)
+                        pipe.execute()
+            task = self._to_task(stream, *entries[0])
+            if task is not None:
                 return task
-            # Cancelled before any worker started it.
-            self.client.xack(self.stream, self.group, task.entry_id)
+            # Cancelled before any worker started it, or its data is gone.
 
-    def _to_task(self, entry_id: str, fields: dict[str, str]) -> Task:
-        return Task(entry_id, fields["task_id"], fields["job_id"], json.loads(fields["payload"]))
+    def _to_task(self, stream: str, entry_id: str, fields: dict[str, str]) -> Task | None:
+        """Build a Task from a stream entry, or acknowledge and drop an entry
+        that should not run: one already finished or cancelled, or one whose
+        data has been deleted."""
+        task_id = fields["task_id"]
+        lane = self._lane_of(stream)
+        status = self.client.hget(self._task_key(task_id), "status")
+        # Entries written by an earlier version carry their payload inline.
+        raw = fields.get("payload") or self.client.get(self._payload_key(task_id))
+        if status in FINISHED or status is None or raw is None:
+            self.client.xack(stream, self.group, entry_id)
+            if status not in FINISHED and status is not None:
+                self.client.hset(
+                    self._task_key(task_id),
+                    mapping={"status": FAILED, "error": "the task's data is missing",
+                             "finished_at": self._stamp()},
+                )
+            return None
+        return Task(entry_id, task_id, fields["job_id"], json.loads(raw), lane=lane)
 
-    def _reclaim_abandoned(self, consumer: str) -> Task | None:
-        pending = self.client.xpending_range(self.stream, self.group, min="-", max="+", count=100)
-        for entry in pending:
-            owner = entry["consumer"]
-            # A worker only asks for work when it is free, so anything still under
-            # its own name is left over from before it restarted.
-            if owner != consumer and self.client.exists(self._worker_key(owner)):
-                continue
-            claimed = self.client.xclaim(
-                self.stream,
-                self.group,
-                consumer,
-                min_idle_time=self.reclaim_idle_ms,
-                message_ids=[entry["message_id"]],
-            )
-            if not claimed or claimed[0][1] is None:
-                continue
-            task = self._to_task(*claimed[0])
-            if self.client.hget(self._task_key(task.task_id), "status") in FINISHED:
-                # The previous worker stored its answer but died before acknowledging.
-                self.client.xack(self.stream, self.group, task.entry_id)
-                continue
-            if entry["times_delivered"] >= MAX_DELIVERIES:
-                self.fail(task, f"abandoned by {MAX_DELIVERIES} workers in a row")
-                continue
-            if owner != consumer:
-                task.taken_from = owner
-            return task
+    def _reclaim_abandoned(self, consumer: str, lanes) -> Task | None:
+        for lane in lanes:
+            stream = self._stream(lane)
+            pending = self.client.xpending_range(stream, self.group, min="-", max="+", count=100)
+            for entry in pending:
+                owner = entry["consumer"]
+                # A worker only asks for work when it is free, so anything still
+                # under its own name is left over from before it restarted.
+                if owner != consumer and self.client.exists(self._worker_key(owner)):
+                    continue
+                claimed = self.client.xclaim(
+                    stream,
+                    self.group,
+                    consumer,
+                    min_idle_time=self.reclaim_idle_ms,
+                    message_ids=[entry["message_id"]],
+                )
+                if not claimed or claimed[0][1] is None:
+                    continue
+                # Also drops an entry whose previous worker stored its answer
+                # but died before acknowledging.
+                task = self._to_task(stream, *claimed[0])
+                if task is None:
+                    continue
+                if entry["times_delivered"] >= MAX_DELIVERIES:
+                    self.fail(task, f"abandoned by {MAX_DELIVERIES} workers in a row")
+                    continue
+                if owner != consumer:
+                    task.taken_from = owner
+                return task
         return None
 
     def note(self, task: Task, **details: str) -> None:
@@ -219,7 +285,28 @@ class TaskQueue:
     def _finish(self, task: Task, fields: dict[str, str]) -> None:
         fields["finished_at"] = self._stamp()
         self.client.hset(self._task_key(task.task_id), mapping=fields)
-        self.client.xack(self.stream, self.group, task.entry_id)
+        self.client.xack(self._stream(task.lane), self.group, task.entry_id)
+
+    def release(self, task: Task, reason: str) -> bool:
+        """Hand a task back because this laptop could not run it.
+
+        It returns to the queue for another laptop. Returns False if it has
+        now been handed back too often and was failed instead.
+        """
+        attempts = self.client.hincrby(self._task_key(task.task_id), "attempts", 1)
+        if attempts >= MAX_ATTEMPTS:
+            self.fail(task, f"{reason}. Gave up after {attempts} attempts.")
+            return False
+        stream = self._stream(task.lane)
+        with self.client.pipeline() as pipe:
+            pipe.hset(
+                self._task_key(task.task_id), mapping={"status": PENDING, "last_error": reason}
+            )
+            pipe.hdel(self._task_key(task.task_id), "started_at")
+            pipe.xadd(stream, {"task_id": task.task_id, "job_id": task.job_id})
+            pipe.xack(stream, self.group, task.entry_id)
+            pipe.execute()
+        return True
 
     def get(self, task_id: str) -> dict[str, str]:
         return self.client.hgetall(self._task_key(task_id))
@@ -297,6 +384,38 @@ class TaskQueue:
                 cancelled += 1
         return cancelled
 
+    def retry_failed(self, job_id: str) -> int:
+        """Put a job's failed tasks back in the queue. Returns how many."""
+        retried = 0
+        rows = self.get_fields(self.job_tasks(job_id), ["status", "lane"])
+        for task_id, row in rows.items():
+            if row.get("status") != FAILED or not self.client.exists(self._payload_key(task_id)):
+                continue
+            with self.client.pipeline() as pipe:
+                pipe.hset(self._task_key(task_id), mapping={"status": PENDING, "attempts": "0"})
+                pipe.hdel(
+                    self._task_key(task_id),
+                    "error", "result", "raw", "worker", "model", "started_at", "finished_at",
+                    "taken_over_from", "last_error",
+                )
+                pipe.delete(self._output_key(task_id))
+                pipe.xadd(self._stream(row.get("lane", "")), {"task_id": task_id, "job_id": job_id})
+                pipe.execute()
+            retried += 1
+        return retried
+
+    def remove_tasks(self, job_id: str, task_ids: list[str]) -> None:
+        """Delete tasks and everything stored for them."""
+        if not task_ids:
+            return
+        with self.client.pipeline() as pipe:
+            for task_id in task_ids:
+                pipe.delete(
+                    self._task_key(task_id), self._payload_key(task_id), self._output_key(task_id)
+                )
+                pipe.srem(self._job_key(job_id), task_id)
+            pipe.execute()
+
     def create_job(self, job_id: str, **meta: str) -> None:
         """Record a job so it shows up in the dashboard and in history."""
         with self.client.pipeline() as pipe:
@@ -307,6 +426,9 @@ class TaskQueue:
     def update_job(self, job_id: str, **meta: str) -> None:
         self.client.hset(self._job_meta_key(job_id), mapping=meta)
 
+    def clear_job_fields(self, job_id: str, *fields: str) -> None:
+        self.client.hdel(self._job_meta_key(job_id), *fields)
+
     def close_job(self, job_id: str, **meta: str) -> bool:
         """Record that a job has ended. Returns False if it was already closed,
         so that only one caller announces it."""
@@ -315,12 +437,27 @@ class TaskQueue:
         self.client.hset(self._job_meta_key(job_id), mapping=meta)
         return True
 
+    def lock(self, name: str, seconds: int = 30) -> bool:
+        """Take a short-lived lock. Returns False if someone else holds it."""
+        return bool(self.client.set(f"lock:{name}", "1", nx=True, ex=seconds))
+
+    def unlock(self, name: str) -> None:
+        self.client.delete(f"lock:{name}")
+
     def job_meta(self, job_id: str) -> dict[str, str]:
         return self.client.hgetall(self._job_meta_key(job_id))
 
     def recent_jobs(self, count: int = 20) -> list[str]:
         """Job ids, newest first."""
         return list(self.client.zrevrange("jobs", 0, count - 1))
+
+    def delete_job(self, job_id: str) -> None:
+        """Remove a job from history along with all of its tasks."""
+        self.remove_tasks(job_id, self.job_tasks(job_id))
+        with self.client.pipeline() as pipe:
+            pipe.delete(self._job_key(job_id), self._job_meta_key(job_id))
+            pipe.zrem("jobs", job_id)
+            pipe.execute()
 
     # --- workers ---------------------------------------------------------
 

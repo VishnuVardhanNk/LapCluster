@@ -12,6 +12,7 @@ const ui = {
   serverDown: false,   // the local app itself stopped answering
   skew: 0,             // Redis clock minus this browser's clock, in seconds
   tab: "review",
+  kind: "review",      // which kind of job the form is set to start
   job: "",             // a past review chosen in History; "" follows the newest
   hosts: null,         // hosts found on the network; null until the first search
   password: null,
@@ -122,6 +123,12 @@ function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
   try { localStorage.setItem("lapclusters-theme", theme); } catch { /* private mode */ }
 }
+function themeButton() {
+  return h("button", {
+    class: "btn quiet small", text: "Theme", title: "Switch between light and dark",
+    onclick: () => applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"),
+  });
+}
 (function initTheme() {
   let saved = null;
   try { saved = localStorage.getItem("lapclusters-theme"); } catch { /* private mode */ }
@@ -202,7 +209,10 @@ function buildConnect() {
   };
   return h("div", { class: "connect" },
     h("div", null,
-      h("h1", { text: "LapClusters" }),
+      h("div", { class: "row" },
+        h("h1", { class: "grow", text: "LapClusters" }),
+        themeButton(),
+      ),
       h("p", { class: "lede", text: "Pool the laptops on this network into one private AI cluster. Every laptop runs its own model; nothing is sent to a cloud service." }),
     ),
     connectEls.problem,
@@ -245,8 +255,9 @@ function buildConnect() {
 
 function drawConnect() {
   const d = ui.data;
-  region(connectEls.problem, [ui.connectProblem, ui.serverDown], () => [
+  region(connectEls.problem, [ui.connectProblem, ui.serverDown, d.restore_problem], () => [
     ui.serverDown && h("div", { class: "problem" }, h("strong", { text: "The app on this laptop is not answering. " }), "Start it again with: python -m lapclusters"),
+    !ui.connectProblem && d.restore_problem && h("div", { class: "problem" }, h("strong", { text: "Not reconnected. " }), d.restore_problem),
     ui.connectProblem && h("div", { class: "problem", role: "alert" }, h("strong", { text: "Could not connect. " }), ui.connectProblem),
   ]);
   region(connectEls.laptop, [d.me, d.ollama, d.models, d.model], () => h("dl", { class: "facts" },
@@ -331,7 +342,20 @@ function settlePendingModels() {
 // --- cluster screen --------------------------------------------------------
 
 let els = null;
-const TABS = [["review", "Review"], ["report", "Report"], ["history", "History"], ["activity", "Activity"]];
+const TABS = [["review", "Work"], ["report", "Results"], ["history", "History"], ["activity", "Activity"]];
+const KINDS = [
+  { id: "review", label: "Review code", button: "Start review", source: true, question: false,
+    hint: "Finds real defects in every source file of a repository. Long files are split into parts so nothing is skipped." },
+  { id: "ask", label: "Ask about files", button: "Ask", source: true, question: true,
+    placeholder: "What do you want to know? Leave empty for a summary of each file.",
+    hint: "Asks one question of every file in a folder or repository: code, documents, PDFs and pictures. A picture is read together with the text that refers to it. The answers are then pieced into one." },
+  { id: "prompt", label: "Prompt", button: "Ask", source: false, question: true,
+    placeholder: "Ask anything.",
+    hint: "One question, answered by whichever laptop is free." },
+  { id: "code", label: "Write code", button: "Write it", source: false, question: true,
+    placeholder: "Describe the program or function you need.",
+    hint: "Describe what you need and get complete code back, with a note on how to run it." },
+];
 
 function buildCluster() {
   els = {
@@ -352,7 +376,7 @@ function buildCluster() {
           els.where,
           h("span", { class: "grow" }),
           els.link,
-          h("button", { class: "btn quiet small", text: "Theme", title: "Switch between light and dark", onclick: () => applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark") }),
+          themeButton(),
           h("button", { class: "btn small", text: "Leave", onclick: leave }),
         ),
         els.banner,
@@ -442,7 +466,11 @@ function laptopList(d) {
         task: running[name] || null,
         done: done[name] || 0,
         state: isMe ? d.worker.state : (name in workers ? "running" : "stopped"),
-        note: isMe ? d.worker.note : "",
+        note: isMe ? d.worker.note : (info.problem || ""),
+        sees: isMe ? d.vision : Boolean(info.vision),
+        ready: info.ready !== false,
+        // A worker from before tasks could be handed back reports no readiness.
+        outdated: !isMe && name in workers && !("ready" in info),
         remote: Boolean(info.models),
       };
     });
@@ -453,7 +481,7 @@ function drawLaptops() {
   const list = laptopList(d);
   // Leave the list alone while one of its menus is open.
   if (els.laptops.contains(document.activeElement) && document.activeElement.tagName === "SELECT") return;
-  const signature = [list.map((l) => [l.name, l.live, l.model, l.models, l.ollama, l.task && l.task.id, l.done, l.state, l.note, l.isHost]), ui.pendingModel, d.role, d.connected];
+  const signature = [list.map((l) => [l.name, l.live, l.model, l.models, l.ollama, l.task && l.task.id, l.done, l.state, l.note, l.isHost, l.sees, l.ready, l.outdated]), ui.pendingModel, d.role, d.connected];
   region(els.laptops, signature, () => [
     h("h2", null, h("span", { text: "Laptops" }), h("span", { text: `${list.filter((l) => l.live).length} live` })),
     list.map((laptop) => laptopCard(laptop, d)),
@@ -467,9 +495,11 @@ function laptopCard(laptop, d) {
   } else if (laptop.isMe && laptop.state === "stopping") doing = status("running", "Finishing its last file, then stopping");
   else if (laptop.isMe && laptop.state === "stopped") doing = status("off", "Not reviewing");
   else if (!laptop.live) doing = status("off", "Starting…");
+  else if (laptop.outdated) doing = status("failed", "Needs updating");
+  else if (!laptop.ready) doing = status("failed", "Not taking work");
   else doing = status("pending", "Idle");
 
-  const canSwitch = laptop.ollama && (laptop.isMe || (d.role === "host" && laptop.remote && laptop.live));
+  const canSwitch = laptop.ollama && !laptop.outdated && (laptop.isMe || (d.role === "host" && laptop.remote && laptop.live));
   const kinds = ["laptop"];
   if (laptop.task) kinds.push("working");
   if (!laptop.live && !laptop.isMe) kinds.push("offline");
@@ -482,9 +512,13 @@ function laptopCard(laptop, d) {
     ),
     h("div", { class: "doing" }, doing),
     h("div", { class: "line" }, h("span", { class: "k", text: "Model" }), h("span", { class: "grow" }, modelPicker(laptop.name, laptop.model, laptop.models, canSwitch))),
-    (d.job && laptop.done > 0) && h("div", { class: "line" }, h("span", { class: "k", text: "Done" }), h("span", { text: plural(laptop.done, "file") })),
-    !laptop.ollama && h("div", { class: "note", text: laptop.isMe ? "Ollama is not running on this laptop, so files it takes will fail." : "Ollama is not running on that laptop." }),
-    laptop.note && h("div", { class: "note", text: laptop.note }),
+    (laptop.live || laptop.isMe) && h("div", { class: "line" }, h("span", { class: "k", text: "Reads" }), h("span", { text: laptop.sees ? "text and pictures" : "text only" })),
+    (d.job && laptop.done > 0) && h("div", { class: "line" }, h("span", { class: "k", text: "Done" }), h("span", { text: plural(laptop.done, "task") })),
+    laptop.outdated
+      ? h("div", { class: "note", text: "This laptop runs an older LapClusters and will not be given work. On it, run 'git pull' and 'python -m pip install -r requirements.txt', then start the app again." })
+      : laptop.note
+      ? h("div", { class: "note", text: laptop.note })
+      : !laptop.ollama && h("div", { class: "note", text: "Ollama is not running on that laptop." }),
     laptop.isMe && h("div", { class: "row" },
       laptop.state === "running"
         ? h("button", { class: "btn small", text: "Stop reviewing", onclick: () => setWorker("stop") })
@@ -506,83 +540,148 @@ function drawReview() {
   if (!els.review) {
     const source = h("input", {
       class: "field mono", placeholder: "A folder on this laptop, or a git URL such as https://github.com/owner/repo",
-      "aria-label": "Folder or git URL to review",
-      onkeydown: (e) => { if (e.key === "Enter") startReview(source); },
+      "aria-label": "Folder or git URL",
+      onkeydown: (e) => { if (e.key === "Enter" && ui.kind === "review") startJob(); },
+    });
+    const question = h("textarea", {
+      class: "field", rows: "2", "aria-label": "Question or request",
+      // Enter starts; Shift+Enter makes a new line.
+      onkeydown: (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); startJob(); } },
     });
     els.review = {
-      source,
-      start: h("button", { class: "btn primary", text: "Start review", onclick: () => startReview(source) }),
-      form: h("div"),
+      source, question,
+      kinds: h("div", { class: "kinds", role: "group", "aria-label": "Kind of job" }),
+      hint: h("p", { class: "muted" }),
+      start: h("button", { class: "btn primary", onclick: startJob }),
+      form: h("div", { class: "newjob" }),
       problem: h("div"),
       head: h("div"),
+      answer: h("div"),
       files: h("div"),
     };
-    els.review.form.append(h("div", { class: "newreview" }, els.review.source, els.review.start));
-    els.pane.replaceChildren(els.review.form, els.review.problem, els.review.head, els.review.files);
+    els.review.form.append(els.review.kinds, els.review.hint, source, question, h("div", { class: "row" }, els.review.start));
+    els.pane.replaceChildren(els.review.form, els.review.problem, els.review.head, els.review.answer, els.review.files);
   }
   const r = els.review;
   const busy = job && ["running", "preparing"].includes(job.status);
-  const liveLaptops = Object.keys(d.workers || {}).length;
+  const workers = Object.values(d.workers || {});
+  const liveLaptops = workers.length;
+  const kind = KINDS.find((k) => k.id === ui.kind);
 
   r.form.classList.toggle("hidden", d.role !== "host");
+  region(r.kinds, [ui.kind], () => KINDS.map((k) => h("button", {
+    class: "chip", "aria-pressed": String(k.id === ui.kind), text: k.label,
+    onclick: () => { ui.kind = k.id; ui.reviewProblem = ""; render(); },
+  })));
+  r.hint.textContent = kind.hint;
+  r.source.classList.toggle("hidden", !kind.source);
+  r.question.classList.toggle("hidden", !kind.question);
+  r.question.placeholder = kind.placeholder || "";
+  r.start.textContent = ui.startingReview ? "Starting…" : kind.button;
   r.start.disabled = ui.startingReview || busy || !d.connected;
-  r.start.title = busy ? "Wait for the running review, or cancel it" : "";
-  region(r.problem, [ui.reviewProblem, d.role, liveLaptops, busy], () => [
+  r.start.title = busy ? "Wait for the running job, or cancel it" : "";
+
+  const nobodySees = job && job.waiting_for_sight > 0 && !workers.some((w) => w.vision);
+  region(r.problem, [ui.reviewProblem, d.role, liveLaptops, busy, nobodySees && job.waiting_for_sight], () => [
     ui.reviewProblem && h("div", { class: "problem", role: "alert" }, h("strong", { text: "Could not start. " }), ui.reviewProblem),
-    d.role === "host" && busy && liveLaptops === 0 && h("div", { class: "problem" }, h("strong", { text: "No laptop is reviewing. " }), "Files stay queued until a laptop starts reviewing. Use Start reviewing on a laptop card."),
+    d.role === "host" && busy && liveLaptops === 0 && h("div", { class: "problem" }, h("strong", { text: "No laptop is working. " }), "Tasks stay queued until a laptop starts. Use Start reviewing on a laptop card."),
+    nobodySees && h("div", { class: "problem" }, h("strong", { text: `${plural(job.waiting_for_sight, "task")} with pictures ${job.waiting_for_sight === 1 ? "is" : "are"} waiting. ` }), "No connected laptop is running a model that can see pictures. They start as soon as one switches to such a model or joins."),
   ]);
 
   if (!job) {
     region(r.head, ["none", d.role], () => h("div", { class: "empty" },
-      h("strong", { text: "No review yet" }),
+      h("strong", { text: "Nothing has been run yet" }),
       d.role === "host"
-        ? "Paste a folder path or a git URL above. Each source file becomes one task, and whichever laptop is free takes the next one."
-        : "The host starts reviews. When one starts, its files appear here and this laptop begins taking them."));
+        ? "Choose a kind of job above. Work on files is split into one task per file, and whichever laptop is free takes the next one."
+        : "The host starts jobs. When one starts, its tasks appear here and this laptop begins taking them."));
+    region(r.answer, "none", () => null);
     region(r.files, "none", () => null);
     return;
   }
 
   const finished = job.done + job.failed;
   const following = !ui.job;
-  region(r.head, [job.id, job.status, job.error, job.total, job.done, job.failed, job.running, job.findings, job.laptops, job.duration, following, d.role, job.skipped.length], () => {
-    const words = { preparing: "Reading the repository", running: "In progress", done: "Finished", cancelled: "Cancelled", failed: "Could not start" };
-    const kind = { preparing: "running", running: "running", done: "done", cancelled: "failed", failed: "failed" }[job.status] || "pending";
+  const isReview = job.kind === "review";
+  region(r.head, [job.id, job.kind, job.question, job.status, job.combining, job.error, job.total, job.done, job.failed, job.running, job.findings, job.laptops, job.duration, following, d.role, job.skipped.length], () => {
+    const reading = isReview || job.kind === "ask" ? "Reading the files" : "Starting";
+    const words = { preparing: reading, running: job.combining ? "Combining the answers" : "In progress", done: "Finished", cancelled: "Cancelled", failed: "Could not start" };
+    const glyph = { preparing: "running", running: "running", done: "done", cancelled: "failed", failed: "failed" }[job.status] || "pending";
     const laptopCount = Object.keys(job.laptops).length;
+    const label = KINDS.find((k) => k.id === job.kind);
     return h("div", { class: "jobhead" },
       h("div", { class: "row wrap" },
-        status(kind, words[job.status] || job.status),
+        status(glyph, words[job.status] || job.status),
+        h("span", { class: "tag", text: label ? label.label : job.kind }),
         h("span", { class: "source grow", text: job.source }),
         !following && h("button", { class: "btn small", text: "Back to latest", onclick: () => { ui.job = ""; closeTask(); refresh(); } }),
-        d.role === "host" && job.status === "running" && h("button", { class: "btn small", text: "Cancel review", onclick: () => cancelReview(job.id) }),
+        d.role === "host" && job.status === "running" && h("button", { class: "btn small", text: "Cancel", onclick: () => cancelReview(job.id) }),
+        d.role === "host" && job.failed > 0 && job.status !== "preparing" && h("button", { class: "btn small", text: `Run ${plural(job.failed, "failed task")} again`, onclick: () => retryFailed(job.id) }),
         job.total > 0 && finished > 0 && h("a", { class: "btn small", href: `/api/reviews/${job.id}/report.md`, text: "Download report" }),
       ),
-      job.status === "failed" && h("div", { class: "problem" }, h("strong", { text: "This review did not start. " }), job.error),
-      job.total > 0 && h("div", { class: "bar", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": String(job.total), "aria-valuenow": String(finished), "aria-label": "Files finished" },
+      job.question && h("p", { class: "question" }, h("span", { class: "muted", text: isReview ? "" : "Asked: " }), job.question),
+      job.status === "failed" && h("div", { class: "problem" }, h("strong", { text: "This job did not start. " }), job.error),
+      job.total > 0 && h("div", { class: "bar", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": String(job.total), "aria-valuenow": String(finished), "aria-label": "Tasks finished" },
         h("i", { class: "ok", style: `width:${(100 * job.done) / job.total}%` }),
         h("i", { class: "bad", style: `width:${(100 * job.failed) / job.total}%` }),
       ),
       job.total > 0 && h("div", { class: "stats" },
-        stat("Files", [String(finished), h("small", { text: ` of ${job.total}` })]),
+        stat(isReview ? "Files and parts" : "Tasks", [String(finished), h("small", { text: ` of ${job.total}` })]),
         stat("Time", job.duration !== null ? duration(job.duration) : (job.queued_at ? since(job.queued_at) : "–")),
         stat("Laptops used", String(laptopCount)),
-        stat("Findings", counts(job.findings.high, job.findings.medium, job.findings.low)),
+        isReview && stat("Findings", counts(job.findings.high, job.findings.medium, job.findings.low)),
         job.failed > 0 && stat("Failed", String(job.failed)),
         job.skipped.length > 0 && stat("Skipped", String(job.skipped.length)),
       ),
     );
   });
 
+  region(r.answer, [job.id, job.kind, job.status, job.answer, job.combining, job.answer_task], () => {
+    if (isReview) return null;
+    if (job.answer) {
+      return h("section", { class: "answer", "aria-label": "Answer" },
+        h("div", { class: "row" },
+          h("h3", { class: "grow", text: "Answer" }),
+          job.answer_task && h("button", { class: "btn small quiet", text: "How it was produced", onclick: () => openTask(job.answer_task) }),
+          h("button", { class: "btn small", text: "Copy", onclick: () => copyText(job.answer) }),
+        ),
+        h("div", { class: "prose", text: job.answer }),
+      );
+    }
+    if (job.status === "done" || job.status === "cancelled") {
+      return h("div", { class: "problem" }, h("strong", { text: "No answer was produced. " }), "Open the failed tasks below to see why, then run them again.");
+    }
+    if (job.combining) return h("p", { class: "muted", text: "Every file has been answered. A laptop is now piecing the answers together." });
+    return null;
+  });
+
   const rows = job.tasks || [];
-  region(r.files, [rows.map((t) => [t.id, t.status, t.worker, t.model, t.started_at, t.finished_at, t.count_high, t.count_medium, t.count_low, t.error]), ui.taskId], () => {
+  region(r.files, [rows.map((t) => [t.id, t.status, t.worker, t.model, t.started_at, t.finished_at, t.count_high, t.count_medium, t.count_low, t.error, t.last_error]), ui.taskId, isReview], () => {
     if (!rows.length) return null;
     return h("table", null,
       h("thead", null, h("tr", null,
-        h("th", { text: "File" }), h("th", { text: "Status" }), h("th", { text: "Laptop" }),
-        h("th", { text: "Model" }), h("th", { class: "num", text: "Time" }), h("th", { text: "Findings" }),
+        h("th", { text: isReview ? "File" : "Task" }), h("th", { text: "Status" }), h("th", { text: "Laptop" }),
+        h("th", { text: "Model" }), h("th", { class: "num", text: "Time" }), h("th", { text: isReview ? "Findings" : "Result" }),
       )),
       h("tbody", null, rows.map((task) => fileRow(task))),
     );
   });
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast("Copied.");
+  } catch {
+    toast("This browser did not allow copying. Select the text and copy it by hand.", true);
+  }
+}
+
+async function retryFailed(jobId) {
+  try {
+    const reply = await api(`/api/reviews/${jobId}/retry`, {});
+    toast(`${plural(reply.retried, "task")} queued again.`);
+  } catch (error) { toast(error.message, true); }
+  await refresh();
 }
 
 function stat(label, value) {
@@ -594,8 +693,13 @@ function fileRow(task) {
   if (task.status === "running" && task.started_at) time = since(Number(task.started_at));
   else if (task.started_at && task.finished_at) time = duration(Number(task.finished_at) - Number(task.started_at));
   let found = h("span", { class: "muted", text: "–" });
-  if (task.status === "done") found = counts(Number(task.count_high || 0), Number(task.count_medium || 0), Number(task.count_low || 0));
-  else if (task.status === "failed") found = h("span", { class: "muted", text: task.error || "" });
+  if (task.status === "done") {
+    found = (task.type || "review") === "review"
+      ? counts(Number(task.count_high || 0), Number(task.count_medium || 0), Number(task.count_low || 0))
+      : h("span", { class: "muted", text: task.type === "combine" ? "combined" : "answered" });
+  } else if (task.status === "failed") found = h("span", { class: "muted", text: task.error || "" });
+  else if (task.last_error) found = h("span", { class: "muted", text: `Handed back: ${task.last_error}` });
+  else if (task.status === "pending" && task.lane === "vision") found = h("span", { class: "muted", text: "needs a model that sees pictures" });
   const open = () => openTask(task.id);
   return h("tr", {
     class: task.id === ui.taskId ? "pick selected" : "pick", tabindex: "0",
@@ -610,16 +714,22 @@ function fileRow(task) {
   );
 }
 
-async function startReview(input) {
-  const source = input.value.trim();
-  if (!source) { ui.reviewProblem = "Enter a folder or a git URL."; render(); return; }
+async function startJob() {
+  if (ui.startingReview || !els.review) return;
+  const kind = KINDS.find((k) => k.id === ui.kind);
+  const source = kind.source ? els.review.source.value.trim() : "";
+  const question = kind.question ? els.review.question.value.trim() : "";
+  if (kind.source && !source) { ui.reviewProblem = "Enter a folder or a git URL."; render(); return; }
+  if (kind.question && !kind.source && !question) { ui.reviewProblem = "Type what you want to ask."; render(); return; }
   ui.startingReview = true;
   ui.reviewProblem = "";
   render();
   try {
-    await api("/api/reviews", { source });
-    input.value = "";
+    await api("/api/reviews", { kind: kind.id, source, question });
+    els.review.question.value = "";
     ui.job = "";
+    ui.findings = null;
+    ui.findingsKey = "";
     closeTask();
   } catch (error) {
     ui.reviewProblem = error.message;
@@ -629,7 +739,7 @@ async function startReview(input) {
 }
 
 async function cancelReview(jobId) {
-  if (!confirm("Cancel this review? Files not started yet are dropped. A file already being reviewed finishes.")) return;
+  if (!confirm("Cancel this job? Tasks not started yet are dropped. One already running finishes.")) return;
   try { await api(`/api/reviews/${jobId}/cancel`, {}); } catch (error) { toast(error.message, true); }
   await refresh();
 }
@@ -647,6 +757,36 @@ function drawReport() {
   if (ui.findingsKey !== key) {
     ui.findingsKey = key;
     api(`/api/reviews/${job.id}/findings`).then((data) => { if (ui.findingsKey === key) { ui.findings = data; render(); } }).catch(() => { ui.findingsKey = ""; });
+  }
+  if (job.kind !== "review") {
+    els.report = null;
+    const data = ui.findings;
+    region(els.pane, ["answers", key, job.answer, data], () => [
+      h("div", { class: "filters" },
+        h("span", { class: "muted grow", text: job.question ? `Asked: ${job.question}` : "" }),
+        h("a", { class: "btn small", href: `/api/reviews/${job.id}/report.md`, text: "Download report" }),
+      ),
+      job.answer
+        ? h("section", { class: "answer" }, h("div", { class: "row" }, h("h3", { class: "grow", text: "Answer" }), h("button", { class: "btn small", text: "Copy", onclick: () => copyText(job.answer) })), h("div", { class: "prose", text: job.answer }))
+        : h("p", { class: "muted", text: "The combined answer appears here when every file has been answered." }),
+      data && data.notes.length > 0 && h("div", null,
+        h("h3", { style: "font-size:13px;margin:18px 0 6px", text: `What each file contributed (${data.notes.length})` }),
+        h("p", { class: "muted", style: "margin-bottom:8px", text: "The answer above was written from these notes alone. Open one to see its prompt and reply." }),
+        h("table", null, h("tbody", null, data.notes.map((note) => h("tr", {
+          class: "pick", tabindex: "0", onclick: () => openTask(note.task),
+          onkeydown: (e) => { if (e.key === "Enter") openTask(note.task); },
+        },
+          h("td", { class: "file", text: note.file }),
+          h("td", { text: note.text }),
+          h("td", null, h("div", { text: note.worker }), h("div", { class: "muted mono", text: note.model })),
+        )))),
+      ),
+      data && data.not_reviewed.length > 0 && h("div", null,
+        h("h3", { style: "font-size:13px;margin:18px 0 6px", text: `Not included (${data.not_reviewed.length})` }),
+        h("table", null, h("tbody", null, data.not_reviewed.map((item) => h("tr", null, h("td", { class: "file", text: item.file }), h("td", { class: "muted", text: item.reason }))))),
+      ),
+    ]);
+    return;
   }
   if (!els.report || els.report.job !== job.id) {
     const search = h("input", { class: "field", placeholder: "Filter by file or wording", style: "max-width:280px", "aria-label": "Filter findings", oninput: (e) => { ui.filter.text = e.target.value.toLowerCase(); render(); } });
@@ -690,26 +830,48 @@ function drawReport() {
 
 function drawHistory() {
   const jobs = ui.data.jobs || [];
-  region(els.pane, ["history", jobs.map((j) => [j.id, j.status, j.done, j.failed, j.duration]), ui.data.job && ui.data.job.id], () => {
-    if (!jobs.length) return h("div", { class: "empty" }, h("strong", { text: "No reviews yet" }), "Every review is kept here with its time and the laptops that took part, so runs can be compared.");
+  const isHost = ui.data.role === "host";
+  region(els.pane, ["history", jobs.map((j) => [j.id, j.status, j.done, j.failed, j.duration]), ui.data.job && ui.data.job.id, isHost], () => {
+    if (!jobs.length) return h("div", { class: "empty" }, h("strong", { text: "Nothing has been run yet" }), "Every job is kept here with its time and the laptops that took part, so runs can be compared.");
     const words = { preparing: "Reading", running: "In progress", done: "Finished", cancelled: "Cancelled", failed: "Did not start" };
-    return h("table", null,
-      h("thead", null, h("tr", null, h("th", { text: "Source" }), h("th", { text: "Started" }), h("th", { text: "Status" }), h("th", { class: "num", text: "Files" }), h("th", { class: "num", text: "Laptops" }), h("th", { class: "num", text: "Time" }), h("th", { text: "Findings" }))),
-      h("tbody", null, jobs.map((job) => {
-        const open = () => { ui.job = job.id; ui.tab = "review"; ui.findings = null; ui.findingsKey = ""; closeTask(); refresh(); };
-        const findings = job.findings || { high: 0, medium: 0, low: 0 };
-        return h("tr", { class: ui.data.job && ui.data.job.id === job.id ? "pick selected" : "pick", tabindex: "0", onclick: open, onkeydown: (e) => { if (e.key === "Enter") open(); } },
-          h("td", { class: "file", text: job.source }),
-          h("td", { text: clock(job.created_at) }),
-          h("td", { text: words[job.status] || job.status }),
-          h("td", { class: "num", text: job.total ? `${job.done} of ${job.total}` : "–" }),
-          h("td", { class: "num", text: String(Object.keys(job.laptops || {}).length) }),
-          h("td", { class: "num", text: duration(job.duration) }),
-          h("td", null, counts(findings.high, findings.medium, findings.low)),
-        );
-      })),
-    );
+    return [
+      h("div", { class: "filters" },
+        h("span", { class: "muted grow", text: "Run the same job with one laptop and then with several to compare the times." }),
+        isHost && h("button", { class: "btn small", text: "Clear history", onclick: clearHistory }),
+      ),
+      h("table", null,
+        h("thead", null, h("tr", null, h("th", { text: "Kind" }), h("th", { text: "What" }), h("th", { text: "Started" }), h("th", { text: "Status" }), h("th", { class: "num", text: "Tasks" }), h("th", { class: "num", text: "Laptops" }), h("th", { class: "num", text: "Time" }), h("th", { text: "Findings" }))),
+        h("tbody", null, jobs.map((job) => {
+          const open = () => { ui.job = job.id; ui.tab = "review"; ui.findings = null; ui.findingsKey = ""; closeTask(); refresh(); };
+          const findings = job.findings || { high: 0, medium: 0, low: 0 };
+          const kind = KINDS.find((k) => k.id === (job.kind || "review"));
+          return h("tr", { class: ui.data.job && ui.data.job.id === job.id ? "pick selected" : "pick", tabindex: "0", onclick: open, onkeydown: (e) => { if (e.key === "Enter") open(); } },
+            h("td", { text: kind ? kind.label : job.kind }),
+            h("td", { class: "file" }, job.source && h("div", { text: job.source }), job.question && h("div", { class: "muted sans", text: job.question })),
+            h("td", { text: clock(job.created_at) }),
+            h("td", { text: words[job.status] || job.status }),
+            h("td", { class: "num", text: job.total ? `${job.done} of ${job.total}` : "–" }),
+            h("td", { class: "num", text: String(Object.keys(job.laptops || {}).length) }),
+            h("td", { class: "num", text: duration(job.duration) }),
+            h("td", null, (job.kind || "review") === "review" ? counts(findings.high, findings.medium, findings.low) : h("span", { class: "muted", text: "–" })),
+          );
+        })),
+      ),
+    ];
   });
+}
+
+async function clearHistory() {
+  if (!confirm("Delete every finished job and everything stored for it: results, prompts and replies? A job that is still running is kept. This cannot be undone.")) return;
+  try {
+    const reply = await api("/api/history/clear", {});
+    toast(`${plural(reply.deleted, "job")} deleted.`);
+    ui.job = "";
+    ui.findings = null;
+    ui.findingsKey = "";
+    closeTask();
+  } catch (error) { toast(error.message, true); }
+  await refresh();
 }
 
 function drawActivity() {
@@ -782,7 +944,7 @@ function drawDrawer() {
   if (!task) { region(els.drawer, ["loading", ui.taskId], () => h("header", null, h("p", { class: "muted", text: "Loading…" }))); return; }
 
   const finished = task.status === "done" || task.status === "failed";
-  const tabs = [["findings", "Findings"], ["reply", finished ? "Raw reply" : "Live reply"], ["prompt", "Prompt"], ["timeline", "Timeline"]];
+  const tabs = [["findings", task.type === "review" ? "Findings" : "Answer"], ["reply", finished ? "Raw reply" : "Live reply"], ["prompt", "Prompt"], ["timeline", "Timeline"]];
   const tab = ui.taskTab || (task.status === "done" ? "findings" : task.status === "failed" ? "timeline" : "reply");
 
   if (!els.drawer.querySelector(".content")) {
@@ -832,9 +994,14 @@ function liveReply(task) {
 
 function drawerBody(tab, task) {
   if (tab === "findings") {
-    if (task.status === "failed") return h("div", { class: "problem" }, h("strong", { text: "This file was not reviewed. " }), task.error);
-    if (task.status !== "done") return h("p", { class: "muted", text: "Findings appear when the review of this file finishes." });
-    if (!task.findings) return h("pre", { class: "code", text: task.result || "(empty reply)" });
+    if (task.status === "failed") return h("div", { class: "problem" }, h("strong", { text: "This task did not finish. " }), task.error);
+    if (task.status !== "done") return h("p", { class: "muted", text: "The result appears here when this task finishes." });
+    if (!task.findings) {
+      return [
+        h("div", { class: "row", style: "margin-bottom:10px" }, h("span", { class: "grow" }), h("button", { class: "btn small", text: "Copy", onclick: () => copyText(task.result) })),
+        h("div", { class: "prose", text: task.result || "(empty reply)" }),
+      ];
+    }
     if (!task.findings.length) return h("p", { text: "The model reported no problems in this file." });
     return task.findings.map((f) => h("div", { class: "finding" },
       h("div", { class: "row" }, h("span", { class: `sev ${f.severity}`, text: f.severity }), h("span", { class: "where mono", text: f.line ? `line ${f.line}` : "no line given" })),
@@ -853,7 +1020,8 @@ function drawerBody(tab, task) {
       : h("p", { class: "muted", text: "The prompt is stored when a laptop starts on the file." });
   }
   const steps = [];
-  if (task.queued_at) steps.push([task.queued_at, "Queued by the host."]);
+  if (task.queued_at) steps.push([task.queued_at, `Queued by the host.${task.needs_sight ? " It includes a picture, so only a laptop whose model can see may take it." : ""}`]);
+  if (task.attempts > 0) steps.push([null, `Handed back to the queue ${task.attempts === 1 ? "once" : `${task.attempts} times`} by a laptop that could not run it. Last reason: ${task.last_error || "not recorded"}.`]);
   if (task.started_at) {
     const waited = task.queued_at ? ` after waiting ${duration(task.started_at - task.queued_at)}` : "";
     const from = task.taken_over_from ? ` It was taken over from ${task.taken_over_from}, which stopped responding.` : "";
@@ -861,9 +1029,10 @@ function drawerBody(tab, task) {
   }
   if (task.finished_at) {
     const took = task.started_at ? ` after ${duration(task.finished_at - task.started_at)}` : "";
+    const outcome = task.type === "review" ? ` with ${plural((task.findings || []).length, "finding")}` : "";
     steps.push([task.finished_at, task.status === "done"
-      ? `Finished${took} with ${plural((task.findings || []).length, "finding")}.`
+      ? `Finished${took}${outcome}.`
       : `Failed${took}: ${task.error}`]);
   }
-  return h("ol", { class: "timeline" }, steps.map(([stamp, text]) => h("li", null, h("time", { text: clock(stamp) }), h("span", { text }))));
+  return h("ol", { class: "timeline" }, steps.map(([stamp, text]) => h("li", null, h("time", { text: stamp ? clock(stamp) : "" }), h("span", { text }))));
 }

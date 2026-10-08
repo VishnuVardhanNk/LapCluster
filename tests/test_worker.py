@@ -75,7 +75,7 @@ class _FlakyQueue:
     def __init__(self):
         self.claims = 0
 
-    def claim(self, consumer, block_ms=5000):
+    def claim(self, consumer, block_ms=5000, lanes=("",)):
         self.claims += 1
         if self.claims == 1:
             raise redis.ConnectionError("connection dropped")
@@ -120,7 +120,7 @@ def test_heartbeat_keeps_worker_listed_until_stopped(queue):
 
 
 class _HealthyQueue:
-    def claim(self, consumer, block_ms=5000):
+    def claim(self, consumer, block_ms=5000, lanes=("",)):
         raise _StopLoop()
 
 
