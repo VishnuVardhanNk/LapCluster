@@ -2,7 +2,7 @@
 
 > Turn the laptops your team already owns into a private AI cluster that reviews a whole code repository in parallel, with no cloud bill and no code leaving the room.
 
-**Status:** the backend is built (checkpoints 1 to 3 of 5). A repository can be reviewed end to end, several workers share the work, and a worker that dies mid-job has its task taken over. So far this has been run with multiple workers on one laptop; a run across separate laptops, the dashboard and the benchmark are still to come and are marked as planned below.
+**Status:** the backend is built (checkpoints 1 to 3 of 5). A repository can be reviewed end to end, several laptops share the work, and a worker that dies mid-job has its task taken over. It has been run across two laptops on a phone hotspot. The dashboard and a proper benchmark are still to come and are marked as planned below.
 
 ## Team
 
@@ -42,11 +42,12 @@ Built:
 - Whole-repository code review from a local folder or a git URL: one task per source file, merged into one Markdown report sorted by severity.
 - Structured model output: Gemma 4 is constrained to a JSON schema, with one retry if a reply is still unusable.
 - Worker heartbeats, and automatic takeover of a task whose worker has died. A task abandoned three times is marked failed so a job always finishes.
+- Automatic host discovery on the local network: workers find the host without an IP address being typed, and follow it if its address changes.
 - A command-line tool that submits a single prompt and waits for the answer.
 
 Planned:
 
-- A verified run across separate laptops on one network.
+- A run across all four laptops.
 - A live dashboard showing connected laptops and task progress.
 - A benchmark comparing one laptop against the full cluster.
 
@@ -99,6 +100,7 @@ If a category or technology is not implemented in the project, specify `N/A` ins
 - `lapclusters/orchestrator.py` queues one review task per file, with the file's content inside the task, waits for all of them, and writes the report.
 - `lapclusters/review.py` builds the review prompt (with numbered lines) and cleans up the model's JSON reply.
 - `lapclusters/worker.py` runs a loop: claim one task through the `workers` consumer group, run it on the model, store the result, acknowledge the task. A background thread refreshes the worker's heartbeat every 5 seconds.
+- `lapclusters/discovery.py` and `lapclusters/host.py` let workers find the host. The host answers a UDP broadcast question with its name and Redis port; the Redis password is never sent over the network this way.
 - `lapclusters/llm.py` makes the HTTP call to Ollama on the same laptop.
 - `lapclusters/cli.py` adds one plain-prompt task and polls its status record until it is `done` or `failed`.
 - `lapclusters/config.py` reads the Redis address, Ollama address, model name and worker name from environment variables or a `.env` file.
@@ -221,10 +223,13 @@ python -m lapclusters.cli "Explain what a task queue is in one sentence."
 
 One laptop is the host: it runs Redis and the orchestrator. Every laptop, including the host, runs a worker and its own Ollama.
 
-1. On the host, start Redis with a password and allow inbound TCP port 6379 through its firewall.
-2. On every other laptop, install the project and pull the model, then set `REDIS_URL` in `.env` to the host's address: `redis://:PASSWORD@HOST_IP:6379/0`.
-3. Start `python -m lapclusters.worker` on each laptop.
-4. Run the orchestrator on the host. It prints how many workers are live.
+1. On the host, start Redis with a password, and allow inbound TCP port 6379 and UDP port 47600 through its firewall.
+2. On the host, run `python -m lapclusters.host` and leave it open. It announces the cluster on the local network.
+3. On every other laptop, install the project and pull the model, then put this in `.env`: `REDIS_URL=redis://:PASSWORD@auto:6379/0`. The word `auto` tells the worker to find the host by itself.
+4. Start `python -m lapclusters.worker` on each laptop. It prints the host address it found.
+5. Run the orchestrator on the host. It prints how many workers are live.
+
+Nobody types an IP address, and if the host's address changes a worker finds it again within a few seconds. `python -m lapclusters.discovery` lists the hosts visible from a laptop. If the network blocks broadcasts, put the host's IP address in place of `auto`.
 
 Only the host needs the repository and internet access. Step-by-step commands are in [docs/SETUP.md](docs/SETUP.md).
 
@@ -238,7 +243,8 @@ To watch tasks move through Redis, and for what each teammate builds next, see [
 
 ### Known Limitations
 
-- Not yet run across separate laptops; multi-worker operation has been checked with several workers on one laptop.
+- Run across two laptops so far, not yet four.
+- Automatic discovery needs a network that allows broadcasts between devices, such as a phone hotspot. Some campus and office networks do not.
 - Source files over 20 KB are listed as not reviewed, because they do not fit in the model's context.
 - Each file is reviewed in isolation, so problems that span several files are not found.
 - The model sometimes reports problems that are not real. Treat the report as leads to check.

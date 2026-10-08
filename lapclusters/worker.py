@@ -6,8 +6,9 @@ import sys
 import threading
 import time
 from typing import Callable
+from urllib.parse import urlsplit
 
-from lapclusters import config, llm, review
+from lapclusters import config, discovery, llm, review
 from lapclusters.taskqueue import (
     CONNECTION_ERRORS,
     TaskError,
@@ -80,7 +81,13 @@ def run_forever(
     consumer: str,
     generate: Callable[..., str],
     retry_delay_s: float = 3.0,
+    reopen: Callable[[], TaskQueue] | None = None,
 ) -> None:
+    """Handle tasks until interrupted.
+
+    After a lost connection, `reopen` is asked for a fresh queue. That lets a
+    worker follow a host whose address has changed.
+    """
     while True:
         try:
             if process_one(queue, consumer, generate):
@@ -88,20 +95,45 @@ def run_forever(
         except CONNECTION_ERRORS:
             print(f"Lost connection to Redis, retrying in {retry_delay_s:g} seconds")
             time.sleep(retry_delay_s)
+            if reopen is not None:
+                try:
+                    queue = reopen()
+                except (*CONNECTION_ERRORS, discovery.DiscoveryError):
+                    pass  # still unreachable; keep the old queue and try again
+
+
+class _Link:
+    """The worker's connection to the cluster, replaceable when the host moves."""
+
+    def __init__(self) -> None:
+        self._stop_heartbeat: threading.Event | None = None
+
+    def open(self) -> TaskQueue:
+        url = discovery.resolve(config.REDIS_URL)
+        queue = TaskQueue(connect(url))
+        queue.ensure_group()
+        queue.heartbeat(config.WORKER_NAME, config.MODEL)
+        if self._stop_heartbeat is not None:
+            self._stop_heartbeat.set()
+        self._stop_heartbeat = start_heartbeat(queue, config.WORKER_NAME, config.MODEL)
+        if discovery.is_auto(config.REDIS_URL):
+            print(f"Connected to the host at {urlsplit(url).hostname}")
+        return queue
 
 
 def main() -> int:
-    queue = TaskQueue(connect(config.REDIS_URL))
+    link = _Link()
     try:
-        queue.ensure_group()
-        queue.heartbeat(config.WORKER_NAME, config.MODEL)
+        queue = link.open()
+    except discovery.DiscoveryError as exc:
+        print(exc, file=sys.stderr)
+        return 1
     except CONNECTION_ERRORS as exc:
         print(connection_problem(exc), file=sys.stderr)
         return 1
-    start_heartbeat(queue, config.WORKER_NAME, config.MODEL)
     print(f"Worker {config.WORKER_NAME} ready, model {config.MODEL}")
     try:
-        run_forever(queue, config.WORKER_NAME, llm.generate)
+        run_forever(queue, config.WORKER_NAME, llm.generate, reopen=link.open)
     except KeyboardInterrupt:
         print("Worker stopped")
     return 0

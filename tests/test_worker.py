@@ -117,3 +117,35 @@ def test_heartbeat_keeps_worker_listed_until_stopped(queue):
         assert queue.workers() == {"laptop-1": "gemma4:e4b"}
     finally:
         stop.set()
+
+
+class _HealthyQueue:
+    def claim(self, consumer, block_ms=5000):
+        raise _StopLoop()
+
+
+def test_run_forever_switches_to_a_reopened_queue():
+    flaky = _FlakyQueue()
+    opened = []
+
+    def reopen():
+        opened.append(True)
+        return _HealthyQueue()
+
+    with pytest.raises(_StopLoop):
+        run_forever(flaky, "w1", lambda prompt: "x", retry_delay_s=0, reopen=reopen)
+    assert opened == [True]
+    assert flaky.claims == 1
+
+
+def test_run_forever_keeps_trying_when_the_host_cannot_be_found_yet():
+    from lapclusters.discovery import DiscoveryError
+
+    flaky = _FlakyQueue()
+
+    def reopen():
+        raise DiscoveryError("nobody home")
+
+    with pytest.raises(_StopLoop):
+        run_forever(flaky, "w1", lambda prompt: "x", retry_delay_s=0, reopen=reopen)
+    assert flaky.claims == 2
