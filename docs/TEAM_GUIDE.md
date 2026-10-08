@@ -75,7 +75,7 @@ Repository review. See section 6.
 ### `tests/`
 `conftest.py` provides a `queue` fixture connected to Redis database 15, which it
 empties before and after each test. Real work uses database 0, so tests never
-touch real tasks. There are 65 tests.
+touch real tasks. There are 67 tests.
 
 ## 3. How to test that it works
 

@@ -1,11 +1,20 @@
 import os
+from urllib.parse import urlsplit
 
 import pytest
 
+from lapclusters import config
 from lapclusters.taskqueue import TaskQueue, connect
 
-# Database 15 keeps test data away from real tasks, which live in database 0.
-TEST_REDIS_URL = os.environ.get("TEST_REDIS_URL", "redis://localhost:6379/15")
+
+def _test_redis_url() -> str:
+    # Same server and password as real work, but database 15, so tests never
+    # touch real tasks, which live in database 0.
+    explicit = os.environ.get("TEST_REDIS_URL")
+    return explicit or urlsplit(config.REDIS_URL)._replace(path="/15").geturl()
+
+
+TEST_REDIS_URL = _test_redis_url()
 
 
 @pytest.fixture

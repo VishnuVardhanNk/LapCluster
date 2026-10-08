@@ -23,6 +23,13 @@ WORKER_TTL_S = 15
 MAX_DELIVERIES = 3
 
 
+def connection_problem(exc: Exception) -> str:
+    """A one-line explanation of a CONNECTION_ERRORS exception for the user."""
+    if isinstance(exc, redis.AuthenticationError):
+        return "Redis rejected the password. Check the password in REDIS_URL."
+    return "Cannot reach Redis. Check REDIS_URL and that Redis is running."
+
+
 class TaskError(Exception):
     """A task that cannot succeed as written. Its message becomes the task's error."""
 
@@ -94,19 +101,33 @@ class TaskQueue:
 
     def claim(self, consumer: str, block_ms: int = 5000) -> Task | None:
         """Take the next task: first one a dead worker left behind, else a new one."""
-        task = self._reclaim_abandoned(consumer)
+        try:
+            task = self._reclaim_abandoned(consumer) or self._read_new(consumer, block_ms)
+        except redis.ResponseError as exc:
+            if "NOGROUP" not in str(exc):
+                raise
+            # Redis was restarted and lost the stream; recreate it and carry on.
+            self.ensure_group()
+            return None
         if task is None:
+            return None
+        self.client.hset(
+            self._task_key(task.task_id), mapping={"status": RUNNING, "worker": consumer}
+        )
+        return task
+
+    def _read_new(self, consumer: str, block_ms: int) -> Task | None:
+        while True:
             response = self.client.xreadgroup(
                 self.group, consumer, {self.stream: ">"}, count=1, block=block_ms
             )
             if not response:
                 return None
-            entry_id, fields = response[0][1][0]
-            task = self._to_task(entry_id, fields)
-        self.client.hset(
-            self._task_key(task.task_id), mapping={"status": RUNNING, "worker": consumer}
-        )
-        return task
+            task = self._to_task(*response[0][1][0])
+            if self.get(task.task_id).get("status") not in FINISHED:
+                return task
+            # Cancelled before any worker started it.
+            self.client.xack(self.stream, self.group, task.entry_id)
 
     def _to_task(self, entry_id: str, fields: dict[str, str]) -> Task:
         return Task(entry_id, fields["task_id"], fields["job_id"], json.loads(fields["payload"]))
@@ -162,6 +183,21 @@ class TaskQueue:
 
     def job_tasks(self, job_id: str) -> list[str]:
         return list(self.client.smembers(self._job_key(job_id)))
+
+    def cancel_job(self, job_id: str) -> int:
+        """Mark a job's unfinished tasks as failed so no worker starts them.
+
+        A task already running on a worker is not interrupted. Returns how many
+        tasks were cancelled.
+        """
+        cancelled = 0
+        for task_id, info in self.get_many(self.job_tasks(job_id)).items():
+            if info.get("status") not in FINISHED:
+                self.client.hset(
+                    self._task_key(task_id), mapping={"status": FAILED, "error": "cancelled"}
+                )
+                cancelled += 1
+        return cancelled
 
     # --- workers ---------------------------------------------------------
 

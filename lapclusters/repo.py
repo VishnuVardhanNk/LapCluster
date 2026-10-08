@@ -105,6 +105,9 @@ def open_repo(source: str) -> Iterator[Path]:
                 check=True,
                 capture_output=True,
                 text=True,
+                # Fail at once on a private repository instead of waiting for a
+                # username nobody can type.
+                env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
             )
         except FileNotFoundError as exc:
             raise RepoError("Could not clone: git is not installed") from exc

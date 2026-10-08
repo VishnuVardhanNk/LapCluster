@@ -10,8 +10,10 @@ from lapclusters import config
 CONTEXT_TOKENS = 8192
 
 
-def generate(prompt: str, schema: dict | None = None, timeout: float = 300.0) -> str:
+def generate(prompt: str, schema: dict | None = None, timeout: float | None = None) -> str:
     """Ask the local model. A JSON `schema` constrains the reply to that shape."""
+    if timeout is None:
+        timeout = config.MODEL_TIMEOUT_S
     body = {
         "model": config.MODEL,
         "prompt": prompt,

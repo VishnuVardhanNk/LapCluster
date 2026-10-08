@@ -8,7 +8,13 @@ import time
 from typing import Callable
 
 from lapclusters import config, llm, review
-from lapclusters.taskqueue import CONNECTION_ERRORS, TaskError, TaskQueue, connect
+from lapclusters.taskqueue import (
+    CONNECTION_ERRORS,
+    TaskError,
+    TaskQueue,
+    connect,
+    connection_problem,
+)
 
 
 def _describe(exc: Exception) -> str:
@@ -89,8 +95,8 @@ def main() -> int:
     try:
         queue.ensure_group()
         queue.heartbeat(config.WORKER_NAME, config.MODEL)
-    except CONNECTION_ERRORS:
-        print("Cannot reach Redis. Check REDIS_URL and that Redis is running.", file=sys.stderr)
+    except CONNECTION_ERRORS as exc:
+        print(connection_problem(exc), file=sys.stderr)
         return 1
     start_heartbeat(queue, config.WORKER_NAME, config.MODEL)
     print(f"Worker {config.WORKER_NAME} ready, model {config.MODEL}")

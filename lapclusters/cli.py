@@ -8,7 +8,14 @@ import time
 import uuid
 
 from lapclusters import config
-from lapclusters.taskqueue import CONNECTION_ERRORS, FAILED, FINISHED, TaskQueue, connect
+from lapclusters.taskqueue import (
+    CONNECTION_ERRORS,
+    FAILED,
+    FINISHED,
+    TaskQueue,
+    connect,
+    connection_problem,
+)
 
 
 def submit_and_wait(
@@ -38,8 +45,8 @@ def main() -> int:
     try:
         queue.ensure_group()
         info = submit_and_wait(queue, args.prompt, timeout_s=args.timeout)
-    except CONNECTION_ERRORS:
-        print("Cannot reach Redis. Check REDIS_URL and that Redis is running.", file=sys.stderr)
+    except CONNECTION_ERRORS as exc:
+        print(connection_problem(exc), file=sys.stderr)
         return 1
     except TimeoutError as exc:
         print(exc, file=sys.stderr)

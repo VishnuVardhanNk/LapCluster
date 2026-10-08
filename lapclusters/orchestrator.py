@@ -14,7 +14,14 @@ from typing import Callable
 from lapclusters import config
 from lapclusters.repo import RepoError, SourceFile, collect_files, open_repo
 from lapclusters.review import SEVERITIES
-from lapclusters.taskqueue import CONNECTION_ERRORS, DONE, FINISHED, TaskQueue, connect
+from lapclusters.taskqueue import (
+    CONNECTION_ERRORS,
+    DONE,
+    FINISHED,
+    TaskQueue,
+    connect,
+    connection_problem,
+)
 
 
 def start_job(queue: TaskQueue, files: list[SourceFile]) -> str:
@@ -137,22 +144,28 @@ def main() -> int:
 
     queue = TaskQueue(connect(config.REDIS_URL))
     started = time.monotonic()
+    job_id = None
     try:
         queue.ensure_group()
         job_id = start_job(queue, collected.files)
         workers = queue.workers()
         print(f"Queued {len(collected.files)} files. Live workers: {len(workers)}")
+        if not workers:
+            print("No worker is running yet. Start one with: python -m lapclusters.worker")
         infos = wait_for_job(
             queue,
             job_id,
             timeout_s=args.timeout,
             on_progress=lambda done, total: print(f"  {done}/{total} files reviewed"),
         )
-    except CONNECTION_ERRORS:
-        print("Cannot reach Redis. Check REDIS_URL and that Redis is running.", file=sys.stderr)
+    except CONNECTION_ERRORS as exc:
+        print(connection_problem(exc), file=sys.stderr)
         return 1
-    except TimeoutError as exc:
-        print(exc, file=sys.stderr)
+    except (TimeoutError, KeyboardInterrupt) as exc:
+        # Do not leave the rest of the job queued in front of the next review.
+        cancelled = queue.cancel_job(job_id) if job_id else 0
+        reason = str(exc) or "Stopped."
+        print(f"{reason} Cancelled {cancelled} unstarted files.", file=sys.stderr)
         return 1
 
     Path(args.output).write_text(

@@ -190,6 +190,7 @@ REDIS_URL=redis://localhost:6379/0
 OLLAMA_URL=http://localhost:11434
 MODEL=gemma4:e4b
 WORKER_NAME=
+MODEL_TIMEOUT_S=600
 ```
 
 ### Running the Project

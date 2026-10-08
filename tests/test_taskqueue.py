@@ -141,3 +141,27 @@ def test_task_abandoned_three_times_is_marked_failed(queue):
     info = queue.get(task_id)
     assert info["status"] == "failed"
     assert info["error"] == "abandoned by 3 workers in a row"
+
+
+def test_claim_recovers_when_redis_was_wiped(queue):
+    # Restarting the Redis container removes the stream and its consumer group.
+    queue.client.flushdb()
+    assert queue.claim("worker-a", block_ms=100) is None
+    task_id = queue.add_task("job1", {"prompt": "hi"})
+    assert queue.claim("worker-a", block_ms=100).task_id == task_id
+
+
+def test_cancel_job_stops_unstarted_tasks_from_running(queue):
+    done_id = queue.add_task("job1", {"prompt": "a"})
+    queue.complete(queue.claim("worker-a", block_ms=100), "answer")
+    waiting_id = queue.add_task("job1", {"prompt": "b"})
+    other_job_id = queue.add_task("job2", {"prompt": "c"})
+
+    assert queue.cancel_job("job1") == 1
+    assert queue.get(done_id)["status"] == "done"
+    assert queue.get(waiting_id)["status"] == "failed"
+    assert queue.get(waiting_id)["error"] == "cancelled"
+
+    # The cancelled task is skipped; the next task handed out is the other job's.
+    assert queue.claim("worker-a", block_ms=100).task_id == other_job_id
+    assert queue.client.xpending(queue.stream, queue.group)["pending"] == 1
