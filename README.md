@@ -257,6 +257,8 @@ python -m lapclusters.orchestrator tests/fixtures/sample_repo
 
 Progress is printed as files finish, and the report is written to `review-report.md` (change it with `--output`). The bundled sample repository contains deliberate bugs to try it on. The first request is slower because Ollama has to load the model.
 
+A small mixed collection is bundled in `examples/sales-pack`: a report that refers to a chart, the chart, a PDF memo and a photo of a sign. Asking it "How many units were sold in the month of the spring campaign, and what was the revenue that month?" can only be answered by reading the report and its chart together.
+
 The same command runs the other kinds of job:
 
 ```bash

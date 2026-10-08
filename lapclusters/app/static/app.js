@@ -491,7 +491,7 @@ function drawLaptops() {
 function laptopCard(laptop, d) {
   let doing;
   if (laptop.task) {
-    doing = [status("running", ""), h("span", { class: "file mono", title: laptop.task.name, text: laptop.task.name }), h("span", { class: "muted" }, since(Number(laptop.task.started_at)))];
+    doing = [status("running", "Working on"), h("span", { class: "file mono", title: laptop.task.name, text: laptop.task.name }), h("span", { class: "muted" }, since(Number(laptop.task.started_at)))];
   } else if (laptop.isMe && laptop.state === "stopping") doing = status("running", "Finishing its last file, then stopping");
   else if (laptop.isMe && laptop.state === "stopped") doing = status("off", "Not reviewing");
   else if (!laptop.live) doing = status("off", "Starting…");
